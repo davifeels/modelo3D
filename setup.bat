@@ -26,7 +26,7 @@ echo [3/4] Atualizando pip...
 python -m pip install --upgrade pip --quiet
 
 echo [4/4] Instalando dependencias...
-pip install PyQt5 pyvista pyvistaqt trimesh manifold3d numpy scipy shapely
+pip install PyQt5 pyvista pyvistaqt trimesh manifold3d numpy scipy shapely networkx rtree
 if %errorlevel% neq 0 (
     echo ERRO ao instalar dependencias.
     pause
