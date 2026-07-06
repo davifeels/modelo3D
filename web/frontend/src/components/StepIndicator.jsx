@@ -8,6 +8,7 @@ const STEP_MAP = {
   idle: 0,
   loaded: 1,
   cutting: 1,
+  multimask: 1,
   painting: 2,
   previewing: 3,
   processing: 4,

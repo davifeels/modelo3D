@@ -417,6 +417,7 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     jointPins, cutOrigin, cutNormal, selectedPinIdx,
     partAIdx, partBIdx,
     activeCutPlane, modelBounds,
+    maskLabels, selectedRegionId,
     addPaintedFaces, removePaintedFaces, clearPaintedFaces, setError,
   } = useStore()
 
@@ -706,6 +707,10 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
         colorFaces(meshObjsRef.current[0].geometry, restored, C.painted)
         paintHistRef.current = [restored]  // um único entry de undo para o estado restaurado
       }
+
+      // Máscara multi-peça ativa — recolore por região (mesh recarregada)
+      const { maskLabels: ml, selectedRegionId: sr } = useStore.getState()
+      if (restoredStep === 'multimask' && ml) colorMaskRegions(ml, sr)
     } finally {
       setMeshLoading(false)
     }
@@ -919,6 +924,40 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     cursor.scale.set(currentBrushSizeCursor, currentBrushSizeCursor, currentBrushSizeCursor)
   }
 
+  // ── Máscara multi-peça (§1): colore faces por região ─────────────────────
+  const maskColoredRef = useRef(false)
+
+  function colorMaskRegions(labels, selectedId) {
+    const geo = meshObjsRef.current[0]?.geometry
+    if (!geo || !labels) return
+    const arr = geo.attributes.color.array
+    const n = Math.min(geo._faceCount, labels.length)
+    const white = new THREE.Color(0xffffff)
+    const palette = PART_COLORS.map(c => c.clone())
+    const selPalette = PART_COLORS.map(c => c.clone().lerp(white, 0.45))
+    for (let fi = 0; fi < n; fi++) {
+      const c = (labels[fi] === selectedId ? selPalette : palette)[labels[fi] % PART_COLORS.length]
+      for (let vi = 0; vi < 3; vi++) {
+        const off = (fi * 3 + vi) * 3
+        arr[off] = c.r; arr[off + 1] = c.g; arr[off + 2] = c.b
+      }
+    }
+    geo.attributes.color.needsUpdate = true
+    maskColoredRef.current = true
+  }
+
+  useEffect(() => {
+    if (step === 'multimask' && maskLabels) {
+      colorMaskRegions(maskLabels, selectedRegionId)
+    } else if (maskColoredRef.current) {
+      // Saiu do modo sem aplicar (voltou p/ loaded) — restaura cor base.
+      // Se a máscara foi aplicada, parts muda e loadMeshes recolore sozinho.
+      maskColoredRef.current = false
+      const geo = meshObjsRef.current[0]?.geometry
+      if (geo) colorFaces(geo, null, C.base)
+    }
+  }, [step, maskLabels, selectedRegionId])
+
   // ── Seleção de conector no preview (§2.2) ────────────────────────────────
   const pinPickDownRef = useRef(null)
 
@@ -971,6 +1010,23 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
         )
         pinPickDownRef.current = null
         if (d < 5) pickPinAt(e)
+      }
+      // Clique (sem drag) no step multimask seleciona a região da face clicada
+      if (step === 'multimask' && pinPickDownRef.current) {
+        const d = Math.hypot(
+          e.clientX - pinPickDownRef.current.x,
+          e.clientY - pinPickDownRef.current.y,
+        )
+        pinPickDownRef.current = null
+        if (d < 5) {
+          const res = getRaycastFace(e)
+          const { maskLabels: labels, selectedRegionId: cur, setSelectedRegion } = useStore.getState()
+          // meshIdx 0 = malha segmentada (a máscara colore/pertence a ela)
+          if (res && res.meshIdx === 0 && labels && res.hit.faceIndex < labels.length) {
+            const rid = labels[res.hit.faceIndex]
+            setSelectedRegion(rid === cur ? null : rid)
+          }
+        }
       }
       if (isPainting.current) {
         isPainting.current = false

@@ -95,4 +95,14 @@ export const api = {
 
   confirmAll: (sessionId, jointType, fit) =>
     req('POST', '/confirm-all', { session_id: sessionId, joint_type: jointType, fit }),
+
+  // Modo Professional (§1): máscara multi-peça
+  segmentMask: (sessionId, partIdx, granularity) =>
+    req('POST', '/segment-mask', { session_id: sessionId, part_idx: partIdx, granularity }),
+
+  maskSplit: (sessionId, partIdx, labels, regionId) =>
+    req('POST', '/mask-split', { session_id: sessionId, part_idx: partIdx, labels, region_id: regionId }),
+
+  cutByMultiMask: (sessionId, partIdx, labels) =>
+    req('POST', '/cut-by-multi-mask', { session_id: sessionId, part_idx: partIdx, labels }),
 }

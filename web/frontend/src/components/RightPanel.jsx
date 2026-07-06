@@ -175,6 +175,8 @@ export default function RightPanel({ viewerRef }) {
     viewMode, showWireframe, showJoints, jointPins, jointParams, paintedCount, lang,
     jointType, jointFit, setJointType, setJointFit,
     selectedPinIdx, setSelectedPin, updatePin,
+    maskLabels, maskRegionSizes, maskGranularity, selectedRegionId,
+    afterSegmentMask, setSelectedRegion, exitMultiMask, afterMultiMaskCut,
   } = useStore()
 
   async function handleSuggestCuts() {
@@ -182,6 +184,44 @@ export default function RightPanel({ viewerRef }) {
     try {
       const res = await api.suggestCuts(sessionId, selectedPart)
       afterSuggestCuts(res.suggestions, res.bounds)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Modo Professional (§1): segmentação multi-peça ────────────────────────
+  async function handleSegmentMask(granularity) {
+    setLoading(true, t('proc_segmenting'), 40)
+    try {
+      const res = await api.segmentMask(sessionId, selectedPart, granularity)
+      afterSegmentMask(res.labels, res.region_sizes, granularity)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleMaskSplit() {
+    if (selectedRegionId == null) return
+    setLoading(true, t('proc_segmenting'), 40)
+    try {
+      const res = await api.maskSplit(sessionId, selectedPart, maskLabels, selectedRegionId)
+      afterSegmentMask(res.labels, res.region_sizes, maskGranularity)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleApplyMask() {
+    setLoading(true, t('proc_cutting'), 60)
+    try {
+      const res = await api.cutByMultiMask(sessionId, selectedPart, maskLabels)
+      afterMultiMaskCut(res.parts_meta)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -310,6 +350,7 @@ export default function RightPanel({ viewerRef }) {
         <span className="rp-title">
           {step === 'loaded'      ? t('rp_auto_cut')
           : step === 'cutting'    ? t('rp_adjust_cut')
+          : step === 'multimask'  ? t('rp_multimask')
           : step === 'painting'   ? t('rp_manual_sel')
           : step === 'previewing' ? t('rp_preview')
           : step === 'result'     ? t('rp_view_export')
@@ -340,6 +381,80 @@ export default function RightPanel({ viewerRef }) {
 
         {/* STEP: cutting */}
         {step === 'cutting' && <AutoCutPanel />}
+
+        {/* STEP: multimask (§1 — modo Professional) */}
+        {step === 'multimask' && (() => {
+          const regions = Object.entries(maskRegionSizes)
+            .map(([id, n]) => [Number(id), n])
+            .sort((a, b) => b[1] - a[1])
+          return (
+            <>
+              <div className="rp-section">
+                <div className="rp-label">{t('granularity_label')}</div>
+                <div className="btn-row" style={{ marginBottom: 6 }}>
+                  {['baixa', 'media', 'alta'].map((g) => (
+                    <button key={g}
+                      className={`fmt-btn ${maskGranularity === g ? 'active' : ''}`}
+                      onClick={() => { if (g !== maskGranularity) handleSegmentMask(g) }}>
+                      {t('gran_' + g)}
+                    </button>
+                  ))}
+                </div>
+                <p className="rp-hint" style={{ fontSize: 11, margin: 0, lineHeight: 1.5 }}>
+                  {t('gran_hint')}
+                </p>
+              </div>
+
+              <div className="rp-section">
+                <div className="rp-label" style={{ marginBottom: 8 }}>
+                  {t('regions_title')} ({regions.length})
+                </div>
+                {regions.length < 2 && (
+                  <p className="rp-hint" style={{ lineHeight: 1.5, color: 'var(--warning, #f59e0b)' }}>
+                    {t('mask_one_region')}
+                  </p>
+                )}
+                {regions.length >= 2 && (
+                  <p className="rp-hint" style={{ marginBottom: 10, lineHeight: 1.5 }}>
+                    {t('mask_hint_select')}
+                  </p>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {regions.map(([rid, nFaces]) => {
+                    const color = PART_COLORS[rid % PART_COLORS.length]
+                    const selected = rid === selectedRegionId
+                    return (
+                      <button key={rid}
+                        onClick={() => setSelectedRegion(selected ? null : rid)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10,
+                          padding: '8px 10px', borderRadius: 8, cursor: 'pointer',
+                          border: `1.5px solid ${selected ? color : 'var(--b2)'}`,
+                          background: selected ? `${color}22` : 'var(--e3)',
+                          color: 'inherit', textAlign: 'left', transition: 'all 0.15s',
+                        }}>
+                        <span style={{ width: 10, height: 10, borderRadius: 3, background: color, flexShrink: 0 }} />
+                        <span style={{ flex: 1, fontSize: 13, fontWeight: selected ? 600 : 400 }}>
+                          {t('region_label')} {rid + 1}
+                        </span>
+                        <span style={{ fontSize: 11, opacity: 0.45 }}>
+                          {nFaces.toLocaleString()} {t('faces_suffix')}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+                {selectedRegionId != null && (
+                  <button className="btn-action"
+                    style={{ width: '100%', justifyContent: 'center', gap: 6, marginTop: 10 }}
+                    onClick={handleMaskSplit}>
+                    <ScissorsIcon /> {t('btn_split_region')}
+                  </button>
+                )}
+              </div>
+            </>
+          )
+        })()}
 
         {/* STEP: painting */}
         {step === 'painting' && (
@@ -622,6 +737,11 @@ export default function RightPanel({ viewerRef }) {
             <button className="btn-next-step" onClick={handleSuggestCuts}>
               <MagicIcon /> {t('btn_detect_cuts')}
             </button>
+            {/* §1: segmentação automática multi-peça */}
+            <button className="btn-back" style={{ width: '100%', justifyContent: 'center', marginTop: 6 }}
+              onClick={() => handleSegmentMask(maskGranularity || 'media')}>
+              <ScissorsIcon /> {t('btn_pro_mode')}
+            </button>
             <div className="rp-footer-actions">
               <button className="btn-back" style={{ fontSize: 12 }}
                 onClick={() => useStore.setState({ step: 'painting', paintedFaces: [], paintedCount: 0 })}>
@@ -629,6 +749,21 @@ export default function RightPanel({ viewerRef }) {
               </button>
               <button className="btn-back" onClick={() => useStore.getState().reset()}>
                 <ArrowLeftIcon /> {t('btn_import_other')}
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === 'multimask' && (
+          <>
+            <button className="btn-next-step"
+              disabled={!maskLabels || Object.keys(maskRegionSizes).length < 2}
+              onClick={handleApplyMask}>
+              <ScissorsIcon /> {t('btn_apply_mask')} ({Object.keys(maskRegionSizes).length} {t('pieces_suffix')}) <ArrowRightIcon />
+            </button>
+            <div className="rp-footer-actions">
+              <button className="btn-back" onClick={exitMultiMask}>
+                <ArrowLeftIcon /> {t('btn_back')}
               </button>
             </div>
           </>

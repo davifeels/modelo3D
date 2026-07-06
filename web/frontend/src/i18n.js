@@ -178,6 +178,24 @@ const STRINGS = {
   btn_add_all:         { pt: 'Adicionar conectores em todas', en: 'Add all connectors' },
   pending_interfaces:  { pt: 'interface(s) de corte sem conector.', en: 'cut interface(s) without connectors.' },
 
+  // Modo Professional (§1 — máscara multi-peça)
+  rp_multimask:        { pt: 'Modo Professional', en: 'Professional Mode' },
+  btn_pro_mode:        { pt: 'Modo Professional (multi-peças)', en: 'Professional mode (multi-part)' },
+  status_multimask:    { pt: 'Revisando máscara multi-peça', en: 'Reviewing multi-part mask' },
+  proc_segmenting:     { pt: 'Segmentando o modelo…', en: 'Segmenting model…' },
+  granularity_label:   { pt: 'Granularidade', en: 'Granularity' },
+  gran_baixa:          { pt: 'Baixa', en: 'Low' },
+  gran_media:          { pt: 'Média', en: 'Medium' },
+  gran_alta:           { pt: 'Alta', en: 'High' },
+  gran_hint:           { pt: 'Baixa = poucas peças grandes; alta = mais peças menores.', en: 'Low = few large pieces; high = more smaller pieces.' },
+  regions_title:       { pt: 'Regiões detectadas', en: 'Detected regions' },
+  region_label:        { pt: 'Região', en: 'Region' },
+  mask_hint_select:    { pt: 'Clique numa região no modelo (ou na lista) para selecioná-la. Regiões viram peças separadas ao aplicar.', en: 'Click a region on the model (or in the list) to select it. Regions become separate pieces when applied.' },
+  mask_one_region:     { pt: 'Só uma região foi detectada — aumente a granularidade ou use a seleção manual.', en: 'Only one region detected — increase granularity or use manual selection.' },
+  btn_split_region:    { pt: 'Dividir região', en: 'Split region' },
+  btn_apply_mask:      { pt: 'Aplicar máscara', en: 'Apply mask' },
+  pieces_suffix:       { pt: 'peças', en: 'pieces' },
+
   // Processing
   processing:        { pt: 'Processando…', en: 'Processing…' },
   proc_cutting:      { pt: 'Dividindo a malha…', en: 'Splitting the mesh…' },

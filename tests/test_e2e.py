@@ -312,6 +312,78 @@ class TestXray:
         _wait_no_error_toast(page)
 
 
+# ── Modo Professional (§1): máscara multi-peça ────────────────────────────────
+
+CYLINDER_MM_STL = os.path.join(os.path.dirname(__file__), "fixtures", "cylinder_mm.stl")
+
+
+class TestProfessionalMode:
+
+    def _enter_pro_mode(self, page, path=None):
+        _upload_file(page, path or CYLINDER_MM_STL)
+        btn = page.locator("button:has-text('Modo Professional')").first
+        btn.wait_for(state="visible", timeout=10000)
+        btn.click()
+        time.sleep(2.5)
+
+    def test_botao_visivel_apos_upload(self, page):
+        _upload_file(page)
+        btn = page.locator("button:has-text('Modo Professional')").first
+        assert btn.is_visible()
+
+    def test_cilindro_mostra_3_regioes(self, page):
+        """Cilindro: tampa/corpo/tampa → lista com 3 regiões."""
+        self._enter_pro_mode(page)
+        _wait_no_error_toast(page)
+        assert page.locator("text=Regiões detectadas (3)").first.is_visible()
+
+    def test_granularidade_troca_sem_erro(self, page):
+        self._enter_pro_mode(page)
+        page.locator("button:has-text('Alta')").first.click()
+        time.sleep(2.5)
+        _wait_no_error_toast(page)
+        assert page.locator("text=Regiões detectadas").first.is_visible()
+
+    def test_esfera_lisa_apply_desabilitado(self, page):
+        """Esfera sem quebras → 1 região; aplicar máscara fica desabilitado."""
+        self._enter_pro_mode(page, SPHERE_MM_STL)
+        _wait_no_error_toast(page)
+        apply_btn = page.locator("button:has-text('Aplicar máscara')").first
+        assert apply_btn.is_visible()
+        assert apply_btn.is_disabled(), "1 região só — aplicar deveria estar desabilitado"
+
+    def test_selecionar_regiao_mostra_split(self, page):
+        """Clicar numa região da lista mostra o botão de dividir."""
+        self._enter_pro_mode(page)
+        page.locator("button:has-text('Região 1')").first.click()
+        split = page.locator("button:has-text('Dividir região')").first
+        assert split.is_visible(), "botão de split não apareceu após selecionar região"
+
+    def test_fluxo_completo_aplicar_e_add_all(self, page):
+        """Cilindro → aplicar máscara (3 peças) → interfaces pendentes →
+        'Adicionar conectores em todas' processa e o aviso some."""
+        from playwright.sync_api import expect
+        self._enter_pro_mode(page)
+        apply_btn = page.locator("button:has-text('Aplicar máscara')").first
+        assert apply_btn.is_enabled(), "3 regiões — aplicar deveria estar habilitado"
+        apply_btn.click()
+        time.sleep(4)
+        _wait_no_error_toast(page)
+        add_all = page.locator("button:has-text('Adicionar conectores em todas')").first
+        expect(add_all).to_be_visible(timeout=30000)
+        add_all.click()
+        # confirm-all roda várias booleanas — espera generosa até o botão sumir
+        expect(add_all).not_to_be_visible(timeout=120000)
+        _wait_no_error_toast(page)
+
+    def test_voltar_sai_do_modo(self, page):
+        self._enter_pro_mode(page)
+        page.locator("button:has-text('Voltar')").first.click()
+        time.sleep(0.5)
+        _wait_no_error_toast(page)
+        assert page.locator("button:has-text('Modo Professional')").first.is_visible()
+
+
 # ── Novo fluxo de corte automático ────────────────────────────────────────────
 
 class TestAutoCutFlow:

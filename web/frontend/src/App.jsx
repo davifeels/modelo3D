@@ -48,8 +48,9 @@ function StatusBar() {
   const { step, info, paintedCount, loading, progressMsg, error, lang } = useStore()
   const stepKey = {
     idle: 'status_idle', loaded: 'status_loaded', cutting: 'status_cutting',
-    painting: 'status_painting', previewing: 'status_previewing',
-    processing: 'status_processing', result: 'status_result',
+    multimask: 'status_multimask', painting: 'status_painting',
+    previewing: 'status_previewing', processing: 'status_processing',
+    result: 'status_result',
   }[step] || 'status_idle'
 
   return (

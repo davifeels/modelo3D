@@ -37,6 +37,12 @@ export const useStore = create((set, get) => ({
   partAIdx: 0,
   partBIdx: 1,
 
+  // Modo Professional (§1): máscara multi-peça
+  maskLabels: null,        // Array de label por face | null
+  maskRegionSizes: {},     // { regionId: nFaces }
+  maskGranularity: 'media',
+  selectedRegionId: null,  // região selecionada p/ split
+
   // Preview joints
   jointPins: [],      // array of pin descriptors
   jointParams: null,  // { n_pins, pin_diameter, pin_depth, tolerance, joint_type, fit }
@@ -135,6 +141,20 @@ export const useStore = create((set, get) => ({
 
   setSelectedPin: (selectedPinIdx) => set({ selectedPinIdx }),
 
+  // Modo Professional (§1)
+  afterSegmentMask: (labels, regionSizes, granularity) =>
+    set({ maskLabels: labels, maskRegionSizes: regionSizes, maskGranularity: granularity,
+          selectedRegionId: null, step: 'multimask' }),
+
+  setSelectedRegion: (selectedRegionId) => set({ selectedRegionId }),
+
+  exitMultiMask: () =>
+    set({ maskLabels: null, maskRegionSizes: {}, selectedRegionId: null, step: 'loaded' }),
+
+  afterMultiMaskCut: (parts) =>
+    set({ parts, maskLabels: null, maskRegionSizes: {}, selectedRegionId: null,
+          warnings: [], step: 'result' }),
+
   // Edição individual (§2.2): aplica patch a um conector do preview
   updatePin: (idx, patch) => set(s => ({
     jointPins: s.jointPins.map((p, i) => (i === idx ? { ...p, ...patch } : p)),
@@ -161,6 +181,9 @@ export const useStore = create((set, get) => ({
       jointParams: null,
       cutOrigin: null,
       cutNormal: null,
+      maskLabels: null,
+      maskRegionSizes: {},
+      selectedRegionId: null,
     })
   },
 
@@ -197,6 +220,7 @@ export const useStore = create((set, get) => ({
       paintedFaces: [], paintedCount: 0, fillRadius: 40,
       cutSuggestions: [], activeCutPlane: null, modelBounds: null,
       cutOrigin: null, cutNormal: null,
+      maskLabels: null, maskRegionSizes: {}, selectedRegionId: null,
       jointPins: [], jointParams: null, warnings: [],
       loading: false, error: null, restorePrompt: null,
       selectedPart: 0, viewMode: 'same', activeTab: 0,
