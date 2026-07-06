@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: web/backend/Dockerfile
+    image: zefirosplit-backend
+    ports:
+      - "8000:8000"          # mesmo endereço usado pela suíte de testes de API
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: web/frontend/Dockerfile
+    image: zefirosplit-frontend
+    ports:
+      - "5173:80"            # mesmo endereço usado pelos testes E2E
+    depends_on:
+      - backend
+    restart: unless-stopped

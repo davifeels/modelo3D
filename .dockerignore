@@ -1,0 +1,10 @@
+.git
+venv
+web/backend/venv
+web/frontend/node_modules
+web/frontend/dist
+**/__pycache__
+**/*.pyc
+web/backend/*.log
+tests
+.claude
