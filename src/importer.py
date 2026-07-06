@@ -1,22 +1,57 @@
 import trimesh
 import numpy as np
 from pathlib import Path
-from src.cutter import split_by_components
+import threading
 
-# Limiar para alertar sobre modelos pesados (faces)
-HEAVY_MESH_THRESHOLD = 500_000
-# Alvo padrão de simplificação (faces)
-SIMPLIFY_TARGET = 200_000
+from src import config as cfg
+from src import logger as log_mod
+
+_log = log_mod.get()
+
+HEAVY_MESH_THRESHOLD: int = cfg.get("mesh", "heavy_threshold_faces", 500_000)
+
+_SPLIT_MAX_FACES  = 150_000
+_REPAIR_MAX_FACES = 50_000
+
+
+def _run_with_timeout(fn, timeout, *args):
+    """
+    Executa fn em thread separada com timeout.
+    Retorna (result, ok). Se timeout → (None, False).
+    IMPORTANTE: só usar para operações que NÃO modificam objetos externos em place,
+    pois modificações in-place em threads podem ter visibilidade indeterminada no Windows.
+    """
+    result = [None]
+    error  = [None]
+    done   = threading.Event()
+
+    def _target():
+        try:
+            result[0] = fn(*args)
+        except Exception as e:
+            error[0] = e
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    if not done.wait(timeout):
+        _log.warning("Timeout (%.1fs) em operação — pulando", timeout)
+        return None, False
+    if error[0]:
+        raise error[0]
+    return result[0], True
 
 
 def load_mesh(path: str):
     """
-    Carrega STL/OBJ e divide automaticamente em componentes conectados.
-    Retorna (list[Trimesh], info_dict).
-    info_dict inclui 'is_heavy': True se faces > HEAVY_MESH_THRESHOLD.
+    Carregamento rápido. merge_vertices e split são chamados direto (são rápidos).
+    Repair tem timeout pois fix_normals pode ser lento em meshes grandes.
     """
     path = Path(path)
-    raw = trimesh.load(str(path), force="mesh")
+    _log.info("Carregando: %s", path)
+
+    raw = trimesh.load(str(path), force="mesh", process=False)
 
     if isinstance(raw, trimesh.Scene):
         meshes = [g for g in raw.geometry.values() if isinstance(g, trimesh.Trimesh)]
@@ -27,31 +62,134 @@ def load_mesh(path: str):
     if not isinstance(raw, trimesh.Trimesh):
         raise ValueError("Formato não suportado.")
 
+    # merge_vertices é rápido (< 100ms mesmo para 500k faces) — chamada direta
+    try:
+        raw.merge_vertices()
+    except Exception as e:
+        _log.warning("merge_vertices falhou: %s", e)
+
     n_faces = len(raw.faces)
-    components = split_by_components(raw)
+    n_verts = len(raw.vertices)
+    _log.info("Após merge: %d faces, %d verts", n_faces, n_verts)
+
+    # ── Repair (só meshes pequenas, com timeout) ──────────────────────────────
+    is_wt = False
+    was_repaired = False
+    if n_faces < _REPAIR_MAX_FACES:
+        def _do_repair():
+            trimesh.repair.fix_normals(raw)
+            trimesh.repair.fix_winding(raw)
+            wt = bool(raw.is_watertight)
+            repaired = False
+            if not wt:
+                # Fecha buracos pequenos (briefing seção 8). fill_holes do
+                # trimesh só fecha buracos de 3-4 lados — rápido e seguro.
+                try:
+                    trimesh.repair.fill_holes(raw)
+                    wt = bool(raw.is_watertight)
+                    repaired = wt
+                except Exception:
+                    pass
+            return wt, repaired
+
+        result, ok = _run_with_timeout(_do_repair, 8.0)
+        if ok and result is not None:
+            is_wt, was_repaired = result
+        else:
+            try:
+                is_wt = bool(raw.is_watertight)
+            except Exception:
+                pass
+    else:
+        try:
+            is_wt = bool(raw.is_watertight)
+        except Exception:
+            pass
+
+    # ── Split em componentes ──────────────────────────────────────────────────
+    # split() é rápido (< 100ms) após merge_vertices — chamada direta
+    if n_faces <= _SPLIT_MAX_FACES:
+        try:
+            components = _split_components(raw)
+        except Exception as e:
+            _log.warning("split falhou: %s — usando mesh inteira", e)
+            components = [raw]
+    else:
+        components = [raw]
+
+    n_comp = len(components)
+    _log.info("%d componente(s)", n_comp)
 
     bounds = raw.bounds
-    dims = bounds[1] - bounds[0]
+    dims   = bounds[1] - bounds[0]
+    max_d  = float(dims.max())
 
-    # Detecta unidade provável pelo tamanho do modelo
-    max_dim = float(dims.max())
-    if max_dim > 500:
-        unit_hint = "cm (modelo grande — considere converter para mm)"
-    elif max_dim < 1:
-        unit_hint = "m (modelo pequeno — pode estar em metros)"
+    # Detecta e auto-escala para mm
+    # Objetos impressos em 3D: geralmente 10–500mm.
+    # Se max_d < 10 → provavelmente em metros → ×1000
+    # Se max_d > 10000 → provavelmente em µm → ×0.001
+    if max_d < 10:
+        scale = 1000.0
+        unit_hint = "m"
+    elif max_d > 10000:
+        scale = 0.001
+        unit_hint = "µm"
+    elif max_d > 500:
+        scale = 10.0
+        unit_hint = "cm"
     else:
+        scale = 1.0
         unit_hint = "mm"
 
+    scaled_from = unit_hint if scale != 1.0 else None
+    if scale != 1.0:
+        # Escala apenas os components (podem ser o próprio raw quando mesh é pesada)
+        scaled_ids = set()
+        for c in components:
+            if id(c) not in scaled_ids:
+                c.apply_scale(scale)
+                scaled_ids.add(id(c))
+        # Escala raw só se não foi escalado via components
+        if id(raw) not in scaled_ids:
+            raw.apply_scale(scale)
+        dims = dims * scale
+        max_d = float(dims.max())
+
+    volume_cm3 = None
+    if is_wt:
+        try:
+            v = float(raw.volume)
+            # Sanity: volume não pode exceder bounding box (em mm³).
+            # Margem de 0.5% cobre o caso degenerado volume == bbox (caixa).
+            bbox_vol = float(dims[0] * dims[1] * dims[2])
+            if 0 < v <= bbox_vol * 1.005 and v < 1e9:
+                volume_cm3 = round(v / 1000.0, 2)
+        except Exception:
+            pass
+
     info = {
-        "name": path.name,
-        "vertices": len(raw.vertices),
-        "faces": n_faces,
-        "dims_mm": dims,
-        "center": raw.centroid,
-        "bounds": bounds,
-        "is_watertight": raw.is_watertight,
-        "n_components": len(components),
-        "is_heavy": n_faces > HEAVY_MESH_THRESHOLD,
-        "unit_hint": unit_hint,
+        "name":          path.name,
+        "vertices":      n_verts,
+        "faces":         n_faces,
+        "dims_mm":       dims,
+        "center":        raw.centroid,
+        "bounds":        bounds,
+        "is_watertight": is_wt,
+        "was_repaired":  was_repaired,
+        "n_components":  n_comp,
+        "is_heavy":      n_faces > HEAVY_MESH_THRESHOLD,
+        "unit_hint":     unit_hint,
+        "scaled_from":   scaled_from,
+        "volume_cm3":    volume_cm3,
     }
     return components, info
+
+
+def _split_components(mesh: trimesh.Trimesh) -> list:
+    """Divide em componentes conectados."""
+    try:
+        from src.cutter import split_by_components
+        return split_by_components(mesh)
+    except Exception as e:
+        _log.warning("split falhou: %s", e)
+        return [mesh]

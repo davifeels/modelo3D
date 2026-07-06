@@ -1,0 +1,25 @@
+{
+  "language": "pt",
+  "joint": {
+    "pin_diameter_mm": 3.0,
+    "pin_depth_mm": 8.0,
+    "tolerance_mm": 0.2,
+    "n_pins": 1,
+    "type": "pin"
+  },
+  "mesh": {
+    "heavy_threshold_faces": 500000,
+    "simplify_target_faces": 200000,
+    "kdtree_sample_size_a": 3000,
+    "kdtree_sample_size_b": 2000,
+    "boundary_percentile": 10
+  },
+  "ui": {
+    "explode_factor": 2.5,
+    "history_max": 8,
+    "default_angle_deg": 30.0,
+    "window_width": 1400,
+    "window_height": 900,
+    "panel_width": 340
+  }
+}

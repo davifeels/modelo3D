@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtCore import Qt
 
+import src.logger as log_mod
 from ui.main_window import MainWindow
 
 
@@ -30,12 +31,21 @@ def _dark_palette(app: QApplication):
 
 
 def main():
+    log = log_mod.setup()
+    log.info("=" * 60)
+    log.info("ZefiroSplit iniciando. Python %s", sys.version.split()[0])
+    log.info("Log salvo em: %s", log_mod.log_path())
+
     app = QApplication(sys.argv)
-    app.setApplicationName("3D Part Splitter")
+    app.setApplicationName("ZefiroSplit")
     _dark_palette(app)
     win = MainWindow()
     win.show()
-    sys.exit(app.exec_())
+
+    log.info("Interface carregada.")
+    exit_code = app.exec_()
+    log.info("ZefiroSplit encerrado (exit code %d).", exit_code)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -11,3 +11,8 @@ build/
 *.stl
 *.obj
 *.zip
+node_modules/
+*.log
+.pytest_cache/
+# Fixtures dos testes E2E são versionadas (exceção ao *.stl acima)
+!tests/fixtures/*.stl

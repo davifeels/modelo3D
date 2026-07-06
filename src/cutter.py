@@ -1,6 +1,21 @@
 import trimesh
 import numpy as np
 
+# Detecta se rtree está disponível para cap=True
+try:
+    import rtree  # noqa: F401
+    _CAP = True
+except ImportError:
+    _CAP = False
+
+
+def _slice(mesh, normal, origin):
+    """slice_mesh_plane com cap=True se rtree disponível, senão cap=False."""
+    try:
+        return trimesh.intersections.slice_mesh_plane(mesh, normal, origin, cap=_CAP)
+    except ImportError:
+        return trimesh.intersections.slice_mesh_plane(mesh, normal, origin, cap=False)
+
 AXIS_NORMALS = {
     "x": np.array([1.0, 0.0, 0.0]),
     "y": np.array([0.0, 1.0, 0.0]),
@@ -15,8 +30,8 @@ def cut_mesh(mesh: trimesh.Trimesh, axis: str, position: float):
     origin = np.zeros(3)
     origin[AXIS_IDX[axis]] = position
 
-    part_pos = trimesh.intersections.slice_mesh_plane(mesh, normal, origin, cap=True)
-    part_neg = trimesh.intersections.slice_mesh_plane(mesh, -normal, origin, cap=True)
+    part_pos = _slice(mesh, normal, origin)
+    part_neg = _slice(mesh, -normal, origin)
 
     if part_pos is None or len(part_pos.faces) == 0:
         raise ValueError("Corte gerou parte vazia no lado positivo. Tente outra posição.")
@@ -117,16 +132,112 @@ def simplify_mesh(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
 
 # ── Pintura automática (região growing) ──────────────────────────────────────
 
+def _boundary_simple_cycles(boundary: np.ndarray) -> list:
+    """
+    Decompõe as arestas de fronteira direcionadas em CICLOS SIMPLES
+    (sem vértice repetido), consumindo cada aresta exatamente uma vez.
+
+    Fronteiras de pintura real são frequentemente não-manifold: dois lóbulos
+    da seleção se tocam num único vértice ("pinch"). Travessia por VÉRTICE
+    (dict a→b) perde arestas paralelas e abandona anéis inteiros — era a
+    causa das bordas abertas na exportação. Travessia por ARESTA com split
+    nos pinch points fecha todo o conjunto.
+    """
+    from collections import defaultdict
+
+    out = defaultdict(list)
+    for a, b in boundary:
+        out[int(a)].append(int(b))
+
+    cycles = []
+    for start in list(out.keys()):
+        while out[start]:
+            path = [start]
+            pos = {start: 0}
+            while True:
+                cur = path[-1]
+                if not out[cur]:
+                    break                    # cadeia aberta (degenerada) — abandona
+                nxt = out[cur].pop()
+                if nxt in pos:
+                    i = pos[nxt]
+                    cycle = path[i:]         # ciclo simples nxt..cur
+                    if len(cycle) >= 3:
+                        cycles.append(cycle)
+                    for v in path[i + 1:]:
+                        del pos[v]
+                    path = path[:i + 1]
+                    if len(path) == 1 and not out[path[0]]:
+                        break
+                else:
+                    path.append(nxt)
+                    pos[nxt] = len(path) - 1
+    return cycles
+
+
+def _cap_boundary_loops(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """
+    Fecha cada anel de fronteira aberto com um leque de triângulos até o
+    centróide do anel. Anéis não-manifold (pinch points) são divididos em
+    ciclos simples antes — cada aresta de fronteira recebe exatamente uma
+    tampa, garantindo malha watertight ao final.
+    """
+    from trimesh import grouping
+
+    edges = mesh.edges                       # direcionadas, seguindo o winding das faces
+    edges_sorted = np.sort(edges, axis=1)
+    unique_rows = grouping.group_rows(edges_sorted, require_count=1)
+    if len(unique_rows) == 0:
+        return mesh
+
+    boundary = edges[unique_rows]            # (M, 2) arestas de fronteira direcionadas
+
+    verts = np.asarray(mesh.vertices)
+    new_verts = []
+    new_faces = []
+
+    for loop in _boundary_simple_cycles(boundary):
+        center = verts[loop].mean(axis=0)
+        ci = len(verts) + len(new_verts)
+        new_verts.append(center)
+        # (b, a, centro): winding oposto ao da aresta de fronteira → normal para fora
+        for a, b in zip(loop, loop[1:] + loop[:1]):
+            new_faces.append([b, a, ci])
+
+    if not new_faces:
+        return mesh
+
+    capped = trimesh.Trimesh(
+        vertices=np.vstack([verts, np.array(new_verts)]),
+        faces=np.vstack([np.asarray(mesh.faces), np.array(new_faces, dtype=np.int64)]),
+        process=False,
+    )
+    capped.process(validate=False)
+    return capped
+
+
 def _close_open_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """
-    Fecha buracos abertos numa mesh usando PyVista/VTK.
-    Tenta trimesh primeiro (rápido), depois PyVista (mais robusto para buracos grandes).
+    Fecha buracos abertos numa mesh.
+    Tenta trimesh primeiro (rápido), depois fan cap dos anéis de fronteira
+    (determinístico), depois PyVista (fallback para casos complexos).
     """
-    # Tentativa 1: trimesh repair (funciona bem para buracos pequenos)
+    # Tentativa 1: trimesh repair (funciona bem para buracos pequenos).
+    # Em CÓPIA — fill_holes muta in-place e, quando falha parcialmente,
+    # deixa a malha num estado que quebra as tentativas seguintes.
     try:
-        trimesh.repair.fill_holes(mesh)
-        if mesh.is_watertight:
-            return mesh
+        candidate = mesh.copy()
+        trimesh.repair.fill_holes(candidate)
+        if candidate.is_watertight:
+            return candidate
+    except Exception:
+        pass
+
+    # Tentativa 2: fan cap determinístico nos anéis de fronteira
+    try:
+        capped = _cap_boundary_loops(mesh)
+        if capped.is_watertight:
+            return capped
     except Exception:
         pass
 
@@ -155,6 +266,68 @@ def _close_open_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 
     mesh.process(validate=False)
     return mesh
+
+
+def cut_by_mask(mesh: trimesh.Trimesh, painted_idx) -> tuple:
+    """
+    Separação definitiva por máscara de faces:
+    - parte pintada = exatamente as faces em painted_idx
+    - parte base    = todas as demais faces
+    Sem plano de corte, sem PCA, sem semi-espaço — a pintura É a seleção.
+
+    A fronteira aberta de cada submalha é fechada com cap local
+    (_close_open_mesh). Retorna (part_painted, part_base, origin, normal),
+    onde origin/normal são apenas metadados da interface para posicionar
+    encaixes: origin = centro dos vértices de fronteira pintado/não-pintado,
+    normal = direção do centróide da base para o centróide da parte pintada.
+    """
+    n_faces = len(mesh.faces)
+    painted_idx = np.unique(np.asarray(painted_idx, dtype=np.int64))
+    painted_idx = painted_idx[(painted_idx >= 0) & (painted_idx < n_faces)]
+
+    mask = np.zeros(n_faces, dtype=bool)
+    mask[painted_idx] = True
+    rest_idx = np.nonzero(~mask)[0]
+
+    if len(painted_idx) == 0:
+        raise ValueError("Nenhuma face pintada válida.")
+    if len(rest_idx) == 0:
+        raise ValueError("Todas as faces foram pintadas — nada para separar.")
+
+    faces = np.asarray(mesh.faces)
+    verts = np.asarray(mesh.vertices)
+
+    # Metadados da interface (para encaixes) — calculados antes dos caps
+    painted_verts = np.unique(faces[mask].ravel())
+    rest_verts = np.unique(faces[~mask].ravel())
+    boundary = np.intersect1d(painted_verts, rest_verts, assume_unique=True)
+
+    painted_centroid = verts[painted_verts].mean(axis=0)
+    rest_centroid = verts[rest_verts].mean(axis=0)
+
+    if len(boundary) > 0:
+        origin = verts[boundary].mean(axis=0)
+    else:
+        # Região pintada é um shell desconexo — interface = ponto médio
+        origin = (painted_centroid + rest_centroid) / 2.0
+
+    delta = painted_centroid - rest_centroid
+    norm_len = np.linalg.norm(delta)
+    normal = delta / norm_len if norm_len > 1e-9 else np.array([0.0, 0.0, 1.0])
+
+    part_painted = mesh.submesh([painted_idx], append=True)
+    part_base = mesh.submesh([rest_idx], append=True)
+
+    # Fecha a costura na fronteira da pintura (cap local — não é corte)
+    part_painted = _close_open_mesh(part_painted)
+    part_base = _close_open_mesh(part_base)
+
+    if part_painted is None or len(part_painted.faces) == 0:
+        raise ValueError("Separação gerou parte pintada vazia.")
+    if part_base is None or len(part_base.faces) == 0:
+        raise ValueError("Separação gerou base vazia.")
+
+    return part_painted, part_base, origin, normal
 
 
 def _bfs_region(mesh: trimesh.Trimesh, start_face: int, angle_deg: float):
@@ -189,51 +362,20 @@ def _bfs_region(mesh: trimesh.Trimesh, start_face: int, angle_deg: float):
     return grown_idx, rest_idx, ratio
 
 
-def _boundary_plane(mesh: trimesh.Trimesh, grown_idx: np.ndarray) -> tuple:
-    """
-    Encontra o plano médio entre a região crescida e o resto.
-    Usa PCA nos vértices da fronteira.
-    Retorna (origin, normal).
-    """
-    grown_set = set(grown_idx.tolist())
-    adj = mesh.face_adjacency
-    all_faces = np.asarray(mesh.faces)
-
-    # Vértices compartilhados entre faces grown e not-grown
-    boundary_verts = set()
-    for f1, f2 in adj:
-        in1 = f1 in grown_set
-        in2 = f2 in grown_set
-        if in1 != in2:
-            shared = set(all_faces[f1].tolist()) & set(all_faces[f2].tolist())
-            boundary_verts.update(shared)
-
-    if len(boundary_verts) < 3:
-        return mesh.centroid.copy(), np.array([0., 0., 1.])
-
-    pts = np.asarray(mesh.vertices)[list(boundary_verts)]
-    center = pts.mean(axis=0)
-    cov = np.cov((pts - center).T)
-    _, evecs = np.linalg.eigh(cov)
-    # Menor autovetor = direção de menor variância = normal do plano
-    normal = evecs[:, 0]
-    normal = normal / np.linalg.norm(normal)
-    return center, normal
-
-
 def region_grow_and_cut(
     mesh: trimesh.Trimesh,
     point: np.ndarray,
     angle_deg: float = 30.0,
 ) -> tuple:
     """
-    "Varinha mágica" 3D com corte limpo:
+    "Varinha mágica" 3D com separação por máscara:
     1. Detecta a região pelo ângulo diedro (region growing)
-    2. Determina o plano médio da fronteira via PCA
-    3. Realiza um corte PLANAR nesse plano (garante malhas fechadas + watertight)
+    2. Separa exatamente as faces da região (cut_by_mask) — sem plano de corte
+    3. Fecha a fronteira de cada parte com cap local
 
-    Retorna (parte_pintada, parte_base, origin, normal).
-    Lança ValueError se a região for trivial ou o corte falhar.
+    Retorna (parte_pintada, parte_base, origin, normal) — origin/normal são
+    metadados da interface para posicionar encaixes, não um plano de corte.
+    Lança ValueError se a região for trivial.
     """
     verts = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces, dtype=np.int64)
@@ -260,25 +402,7 @@ def region_grow_and_cut(
             "Aumente o ângulo de limite."
         )
 
-    # Plano de corte via PCA na fronteira
-    origin, normal = _boundary_plane(mesh, grown_idx)
-
-    # Decide qual lado é "painted" (o lado que contém o centroide da região grown)
-    grown_centroid = np.asarray(mesh.vertices)[grown_idx].mean(axis=0)
-    sign = np.dot(grown_centroid - origin, normal)
-    if sign < 0:
-        normal = -normal
-
-    # Corte planar limpo (cap=True → malhas fechadas)
-    part_painted = trimesh.intersections.slice_mesh_plane(mesh, normal, origin, cap=True)
-    part_base = trimesh.intersections.slice_mesh_plane(mesh, -normal, origin, cap=True)
-
-    if part_painted is None or len(part_painted.faces) == 0:
-        raise ValueError("Corte gerou parte pintada vazia. Tente outro ponto ou ângulo.")
-    if part_base is None or len(part_base.faces) == 0:
-        raise ValueError("Corte gerou base vazia. Tente outro ponto ou ângulo.")
-
-    return part_painted, part_base, origin, normal
+    return cut_by_mask(mesh, grown_idx)
 
 
 # ── Auto-detecção de interface para encaixe ───────────────────────────────────
