@@ -287,6 +287,31 @@ class TestWireframe:
         _wait_no_error_toast(page)
 
 
+# ── X-Ray ─────────────────────────────────────────────────────────────────────
+
+class TestXray:
+
+    def test_xray_toggle_exists(self, page):
+        """Toggle de Raio-X existe após upload."""
+        from playwright.sync_api import expect
+        _upload_file(page)
+        xr = page.locator(".tool-row-toggle").filter(has_text="Raio-X").first
+        expect(xr).to_be_visible(timeout=10000)
+
+    def test_xray_toggle_click(self, page):
+        """Ligar/desligar Raio-X não causa toast de erro."""
+        _upload_file(page)
+        xr_container = page.locator(".tool-row-toggle").filter(has_text="Raio-X")
+        toggle = xr_container.locator(".toggle-switch")
+        toggle.wait_for(state="visible", timeout=10000)
+        toggle.click()
+        time.sleep(0.3)
+        _wait_no_error_toast(page)
+        toggle.click()
+        time.sleep(0.3)
+        _wait_no_error_toast(page)
+
+
 # ── Novo fluxo de corte automático ────────────────────────────────────────────
 
 class TestAutoCutFlow:
@@ -602,6 +627,34 @@ class TestJointSelector:
         btn_gen.click()
         time.sleep(4)
         _wait_no_error_toast(page)
+
+    def test_hint_edicao_individual_apos_preview(self, page):
+        """Com o preview gerado, o hint de edição individual aparece."""
+        self._reach_previewing(page)
+        btn_gen = page.locator("button:has-text('Gerar preview')").first
+        if not btn_gen.is_visible():
+            pytest.skip("Botão de gerar preview não visível")
+        btn_gen.click()
+        time.sleep(4)
+        hint = page.locator("text=Clique num conector").first
+        assert hint.is_visible(), "hint de edição individual não apareceu"
+
+    def test_pular_encaixes_e_add_all(self, page):
+        """Pular encaixes deixa a interface pendente; o botão de 'adicionar
+        em todas' aparece no resultado e processa a pendência."""
+        self._reach_previewing(page)
+        skip = page.locator("button:has-text('Pular encaixes')").first
+        if not skip.is_visible():
+            pytest.skip("Botão de pular encaixes não visível")
+        skip.click()
+        time.sleep(1.5)
+        add_all = page.locator("button:has-text('Adicionar conectores em todas')").first
+        assert add_all.is_visible(), "botão de add-all não apareceu no resultado"
+        add_all.click()
+        time.sleep(6)
+        _wait_no_error_toast(page)
+        # Pendência zerada → botão some
+        assert not add_all.is_visible(), "botão de add-all deveria sumir após processar"
 
 
 # ── Light mode visual ─────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { t } from '../i18n.js'
 import { useStore } from '../store.js'
 import { api } from '../api.js'
@@ -174,6 +174,7 @@ export default function RightPanel({ viewerRef }) {
     setLoading, setError, cutAgain,
     viewMode, showWireframe, showJoints, jointPins, jointParams, paintedCount, lang,
     jointType, jointFit, setJointType, setJointFit,
+    selectedPinIdx, setSelectedPin, updatePin,
   } = useStore()
 
   async function handleSuggestCuts() {
@@ -221,13 +222,83 @@ export default function RightPanel({ viewerRef }) {
   async function handleConfirm() {
     setLoading(true, t('proc_joints'), 60)
     try {
-      const res = await api.confirm(sessionId, partAIdx, partBIdx, cutOrigin, cutNormal, jointType, jointFit)
+      // §2.2: envia o estado editado dos conectores — o backend gera
+      // exatamente o que está no preview (incl. edições individuais)
+      const pins = jointPins?.length ? jointPins.map(p => ({
+        position: p.position,
+        direction: p.direction,
+        joint_type: p.joint_type,
+        diameter: p.pin_radius * 2,
+        depth: p.depth,
+      })) : undefined
+      const res = await api.confirm(sessionId, partAIdx, partBIdx, cutOrigin, cutNormal, jointType, jointFit, pins)
       afterConfirm(res.parts_meta, res.warnings || [])
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
+  }
+
+  // Base ortonormal (u,v) do plano ⊥ à normal — espelha _plane_basis do backend
+  function planeBasis(n) {
+    let u = [-n[1], n[0], 0]
+    if (Math.hypot(...u) < 1e-6) u = [1, 0, 0]
+    const d = u[0] * n[0] + u[1] * n[1] + u[2] * n[2]
+    u = [u[0] - d * n[0], u[1] - d * n[1], u[2] - d * n[2]]
+    const ul = Math.hypot(...u)
+    u = u.map(c => c / ul)
+    const v = [
+      n[1] * u[2] - n[2] * u[1],
+      n[2] * u[0] - n[0] * u[2],
+      n[0] * u[1] - n[1] * u[0],
+    ]
+    return [u, v]
+  }
+
+  // §2.3: interfaces pendentes (cortes sem conector) para "Add all"
+  const [pendingItf, setPendingItf] = useState(0)
+  useEffect(() => {
+    if (step !== 'result' || !sessionId) { setPendingItf(0); return }
+    api.getInterfaces(sessionId)
+      .then(r => setPendingItf(r.n_pending))
+      .catch(() => setPendingItf(0))
+  }, [step, sessionId, parts])
+
+  function handleSkipJoints() {
+    // Corte já está feito na sessão — só avança sem gerar conectores;
+    // a interface fica registrada como pendente no backend.
+    afterConfirm(parts, [])
+  }
+
+  async function handleConfirmAll() {
+    setLoading(true, t('proc_joints'), 60)
+    try {
+      const res = await api.confirmAll(sessionId, jointType, jointFit)
+      afterConfirm(res.parts_meta, res.warnings || [])
+      setPendingItf(0)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function setPinAngles(idx, angleU, angleV) {
+    const n = [...cutNormal]
+    const nl = Math.hypot(...n)
+    const nn = n.map(c => c / nl)
+    const [u, v] = planeBasis(nn)
+    const tu = Math.tan((angleU * Math.PI) / 180)
+    const tv = Math.tan((angleV * Math.PI) / 180)
+    let dir = [
+      nn[0] + tu * u[0] + tv * v[0],
+      nn[1] + tu * u[1] + tv * v[1],
+      nn[2] + tu * u[2] + tv * v[2],
+    ]
+    const dl = Math.hypot(...dir)
+    dir = dir.map(c => c / dl)
+    updatePin(idx, { angleU, angleV, direction: dir })
   }
 
   if (step === 'idle') return null
@@ -360,6 +431,87 @@ export default function RightPanel({ viewerRef }) {
                     </div>
                   </div>
                 </div>
+                {/* §2.2: edição individual do conector selecionado */}
+                {selectedPinIdx != null && jointPins[selectedPinIdx] ? (
+                  <div className="rp-section" style={{
+                    border: '1px solid var(--p2)', borderRadius: 10, padding: 12,
+                  }}>
+                    <div className="rp-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>{t('pin_editor')} #{selectedPinIdx + 1}</span>
+                      <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}
+                              onClick={() => setSelectedPin(null)}>
+                        {t('pin_editor_done')}
+                      </button>
+                    </div>
+
+                    <div className="btn-row" style={{ margin: '8px 0 10px' }}>
+                      {['pin', 'ball', 'dovetail'].map((jt) => (
+                        <button key={jt}
+                          className={`fmt-btn ${jointPins[selectedPinIdx].joint_type === jt ? 'active' : ''}`}
+                          onClick={() => updatePin(selectedPinIdx, { joint_type: jt })}>
+                          {t('joint_' + jt)}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="slider-block">
+                      <div className="slider-head">
+                        <span>{t('edit_diameter')}</span>
+                        <span className="slider-val">{(jointPins[selectedPinIdx].pin_radius * 2).toFixed(1)} mm</span>
+                      </div>
+                      <input className="styled-range" type="range"
+                        min={2} max={Math.max(24, jointParams.pin_diameter * 2)} step={0.5}
+                        value={jointPins[selectedPinIdx].pin_radius * 2}
+                        onChange={e => {
+                          const dia = Number(e.target.value)
+                          updatePin(selectedPinIdx, {
+                            pin_radius: dia / 2,
+                            hole_radius: dia / 2 + (jointParams.tolerance ?? 1),
+                          })
+                        }} />
+                    </div>
+
+                    <div className="slider-block">
+                      <div className="slider-head">
+                        <span>{t('edit_depth')}</span>
+                        <span className="slider-val">{jointPins[selectedPinIdx].depth.toFixed(1)} mm</span>
+                      </div>
+                      <input className="styled-range" type="range"
+                        min={2} max={Math.max(30, jointParams.pin_depth * 2)} step={0.5}
+                        value={jointPins[selectedPinIdx].depth}
+                        onChange={e => updatePin(selectedPinIdx, { depth: Number(e.target.value) })} />
+                    </div>
+
+                    <div className="slider-block">
+                      <div className="slider-head">
+                        <span>{t('edit_angle_u')}</span>
+                        <span className="slider-val">{(jointPins[selectedPinIdx].angleU ?? 0)}°</span>
+                      </div>
+                      <input className="styled-range" type="range" min={-30} max={30} step={1}
+                        value={jointPins[selectedPinIdx].angleU ?? 0}
+                        onChange={e => setPinAngles(selectedPinIdx, Number(e.target.value),
+                                                    jointPins[selectedPinIdx].angleV ?? 0)} />
+                    </div>
+
+                    <div className="slider-block">
+                      <div className="slider-head">
+                        <span>{t('edit_angle_v')}</span>
+                        <span className="slider-val">{(jointPins[selectedPinIdx].angleV ?? 0)}°</span>
+                      </div>
+                      <input className="styled-range" type="range" min={-30} max={30} step={1}
+                        value={jointPins[selectedPinIdx].angleV ?? 0}
+                        onChange={e => setPinAngles(selectedPinIdx, jointPins[selectedPinIdx].angleU ?? 0,
+                                                    Number(e.target.value))} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rp-section">
+                    <p className="rp-hint" style={{ lineHeight: 1.5 }}>
+                      {t('pin_editor_hint')}
+                    </p>
+                  </div>
+                )}
+
                 <div className="rp-section">
                   <p className="rp-hint" style={{ lineHeight: 1.5 }}>
                     {t('preview_check')}
@@ -373,6 +525,20 @@ export default function RightPanel({ viewerRef }) {
         {/* STEP: result */}
         {step === 'result' && (
           <>
+            {/* §2.3: Add all connectors — interfaces cortadas sem conector */}
+            {pendingItf > 0 && (
+              <div className="rp-section" style={{
+                border: '1px solid var(--p2)', borderRadius: 10, padding: 12,
+              }}>
+                <p className="rp-hint" style={{ margin: '0 0 10px', lineHeight: 1.5 }}>
+                  {pendingItf} {t('pending_interfaces')}
+                </p>
+                <button className="btn-generate-preview" onClick={handleConfirmAll}>
+                  {t('btn_add_all')}
+                </button>
+              </div>
+            )}
+
             {/* Todas as partes cortadas — qualquer uma pode ser dividida de novo */}
             <div className="rp-section">
               <div className="rp-label" style={{ marginBottom: 8 }}>
@@ -531,6 +697,10 @@ export default function RightPanel({ viewerRef }) {
             <div className="rp-footer-actions">
               <button className="btn-back" onClick={() => useStore.setState({ step: 'cutting', jointPins: [] })}>
                 <ArrowLeftIcon /> {t('btn_adjust_cut')}
+              </button>
+              {/* §2.3: deixa a interface pendente p/ "Add all connectors" */}
+              <button className="btn-back" style={{ fontSize: 12 }} onClick={handleSkipJoints}>
+                {t('btn_skip_joints')} <ArrowRightIcon />
               </button>
             </div>
           </>

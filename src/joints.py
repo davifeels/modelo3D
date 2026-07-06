@@ -402,12 +402,31 @@ def add_joints(
         origins, notes = plan_pin_origins(part_a, part_b, cut_section_pts, normal, params)
         warnings.extend(notes)
 
+    specs = [(np.asarray(o, dtype=float), normal, params) for o in origins]
+    result_a, result_b, boolean_warnings = apply_joint_specs(part_a, part_b, specs)
+    return result_a, result_b, warnings + boolean_warnings
+
+
+def apply_joint_specs(part_a: trimesh.Trimesh, part_b: trimesh.Trimesh, specs: list):
+    """
+    Aplica uma lista de conectores, cada um com origem, direção e parâmetros
+    PRÓPRIOS: specs = [(origin, direction, JointParams), ...]. direction
+    aponta de part_b → part_a (mesma convenção de add_joints).
+    Retorna (part_a_modificada, part_b_modificada, lista_de_avisos).
+    """
+    warnings = []
+    for _, _, p in specs:
+        if p.joint_type not in JOINT_TYPES:
+            raise ValueError(f"Tipo de conector desconhecido: {p.joint_type!r}")
+
     result_a = part_a
     result_b = part_b
 
-    for i, origin in enumerate(origins):
-        males = _male_solids(params, origin, normal)
-        females = _female_solids(params, origin, normal)
+    for i, (origin, direction, p) in enumerate(specs):
+        direction = np.asarray(direction, dtype=float)
+        direction = direction / np.linalg.norm(direction)
+        males = _male_solids(p, origin, direction)
+        females = _female_solids(p, origin, direction)
 
         try:
             candidate_a = trimesh.boolean.union([result_a] + males, engine="manifold")

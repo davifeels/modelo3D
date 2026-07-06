@@ -330,6 +330,82 @@ def cut_by_mask(mesh: trimesh.Trimesh, painted_idx) -> tuple:
     return part_painted, part_base, origin, normal
 
 
+def cut_by_multi_mask(mesh: trimesh.Trimesh, labels) -> tuple:
+    """
+    Divide a malha em N partes — uma por região da máscara (§1, modo
+    Professional). Cada parte é fechada com caps (_close_open_mesh).
+
+    Retorna (parts, interfaces):
+    - parts: lista de Trimesh na ordem dos ids de região (0..k-1)
+    - interfaces: [{'region_a', 'region_b', 'origin', 'normal'}] por par de
+      regiões adjacentes. Convenção dos encaixes: A = região MAIOR (recebe
+      pinos), B = menor (cavidades); normal aponta de B para A.
+    """
+    labels = np.asarray(labels, dtype=np.int64)
+    n_faces = len(mesh.faces)
+    if len(labels) != n_faces:
+        raise ValueError(f"labels tem {len(labels)} entradas; a malha tem {n_faces} faces.")
+    region_ids = np.unique(labels)
+    if len(region_ids) < 2:
+        raise ValueError("A máscara precisa de pelo menos 2 regiões.")
+
+    verts = np.asarray(mesh.vertices)
+
+    parts = []
+    for rid in region_ids:
+        idx = np.nonzero(labels == rid)[0]
+        part = _close_open_mesh(mesh.submesh([idx], append=True))
+        if part is None or len(part.faces) == 0:
+            raise ValueError(f"Região {rid} gerou parte vazia.")
+        parts.append(part)
+
+    # Interfaces: pares de regiões com arestas de adjacência cruzando
+    fa = mesh.face_adjacency
+    fe = mesh.face_adjacency_edges
+    la, lb = labels[fa[:, 0]], labels[fa[:, 1]]
+    cross = la != lb
+    interfaces = []
+    if np.any(cross):
+        pair_lo = np.minimum(la[cross], lb[cross])
+        pair_hi = np.maximum(la[cross], lb[cross])
+        pair_edges = fe[cross]
+        for lo, hi in {(int(a), int(b)) for a, b in zip(pair_lo, pair_hi)}:
+            sel = (pair_lo == lo) & (pair_hi == hi)
+            pts = verts[np.unique(pair_edges[sel].ravel())]
+            origin = pts.mean(axis=0)
+
+            # Plano da fronteira via SVD; degenera → delta de centróides
+            centered = pts - origin
+            normal = None
+            if len(pts) >= 3:
+                try:
+                    _, sv, Vt = np.linalg.svd(centered, full_matrices=False)
+                    if sv[-1] < sv[0] * 0.9:   # fronteira razoavelmente planar
+                        normal = Vt[-1]
+                except Exception:
+                    pass
+
+            # A = região maior (pinos); B = menor (cavidades)
+            size_lo = int((labels == lo).sum())
+            size_hi = int((labels == hi).sum())
+            ra, rb = (lo, hi) if size_lo >= size_hi else (hi, lo)
+            cen_a = verts[np.unique(np.asarray(mesh.faces)[labels == ra].ravel())].mean(axis=0)
+            cen_b = verts[np.unique(np.asarray(mesh.faces)[labels == rb].ravel())].mean(axis=0)
+            delta = cen_a - cen_b
+            if normal is None:
+                nl = np.linalg.norm(delta)
+                normal = delta / nl if nl > 1e-9 else np.array([0.0, 0.0, 1.0])
+            elif normal.dot(delta) < 0:
+                normal = -normal   # orienta de B → A
+
+            interfaces.append({
+                "region_a": int(ra), "region_b": int(rb),
+                "origin": origin, "normal": np.asarray(normal, dtype=float),
+            })
+
+    return parts, interfaces
+
+
 def _bfs_region(mesh: trimesh.Trimesh, start_face: int, angle_deg: float):
     """BFS region growing. Retorna (grown_idx_array, rest_idx_array, ratio)."""
     n_faces = len(mesh.faces)

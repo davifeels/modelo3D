@@ -58,6 +58,11 @@ def update(sid: str, **kwargs):
             if "parts" in kwargs:
                 s["_bin_cache"] = {}
                 s["_adj_cache"] = {}
+                # Grafos de segmentação são indexados por part_idx — índices
+                # deslocam a cada corte; um grafo antigo em índice novo gera
+                # labels/regiões de OUTRA malha.
+                for k in [k for k in s if isinstance(k, str) and k.startswith("_seg_graph_")]:
+                    del s[k]
             s["last_access"] = time.time()
 
 
@@ -118,7 +123,12 @@ def mesh_to_binary(sid: str, part_idx: int, mesh: trimesh.Trimesh) -> bytes:
     with _lock:
         s = _store.get(sid)
         if s:
-            s["_bin_cache"][part_idx] = data
+            parts = s.get("parts") or []
+            # Só grava se a mesh ainda é a parte atual naquele índice — o
+            # prebuild em background pode terminar DEPOIS de um corte e
+            # gravaria a geometria antiga para a parte nova.
+            if part_idx < len(parts) and parts[part_idx] is mesh:
+                s["_bin_cache"][part_idx] = data
 
     return data
 
@@ -138,7 +148,9 @@ def mesh_adjacency(sid: str, part_idx: int, mesh: trimesh.Trimesh) -> dict:
     with _lock:
         s = _store.get(sid)
         if s:
-            s["_adj_cache"][part_idx] = result
+            parts = s.get("parts") or []
+            if part_idx < len(parts) and parts[part_idx] is mesh:
+                s["_adj_cache"][part_idx] = result
 
     return result
 

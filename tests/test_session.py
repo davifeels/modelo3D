@@ -32,11 +32,23 @@ class TestMeshToBinary:
         assert nf == 0
 
     def test_cache_hit(self, sphere):
-        """Segunda chamada deve retornar os mesmos bytes (cache)."""
+        """Segunda chamada deve retornar os mesmos bytes (cache).
+        A mesh precisa estar registrada em parts — o cache só grava para a
+        parte ATUAL do índice (proteção contra prebuild pós-corte)."""
         sid = sess.create()
+        sess.update(sid, parts=[sphere], names=['sphere'])
         b1 = sess.mesh_to_binary(sid, 0, sphere)
         b2 = sess.mesh_to_binary(sid, 0, sphere)
         assert b1 is b2  # mesmo objeto = cache funcionou
+
+    def test_cache_nao_grava_mesh_desatualizada(self, sphere, cube):
+        """REGRESSÃO: se a mesh passada NÃO é mais a parte atual do índice
+        (prebuild terminou depois de um corte), o cache não deve ser gravado."""
+        sid = sess.create()
+        sess.update(sid, parts=[cube], names=['cube'])
+        sess.mesh_to_binary(sid, 0, sphere)   # sphere não é parts[0]
+        s = sess.get(sid)
+        assert 0 not in s["_bin_cache"]
 
     def test_cache_invalidated_on_update(self, sphere, cube):
         """Cache deve ser invalidado quando parts é atualizado."""
@@ -79,6 +91,7 @@ class TestMeshAdjacency:
 
     def test_cache_hit(self, sphere):
         sid = sess.create()
+        sess.update(sid, parts=[sphere], names=['sphere'])
         r1 = sess.mesh_adjacency(sid, 0, sphere)
         r2 = sess.mesh_adjacency(sid, 0, sphere)
         assert r1 is r2

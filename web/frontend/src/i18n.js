@@ -162,6 +162,21 @@ const STRINGS = {
   fit_apertado:      { pt: 'Apertado', en: 'Tight' },
   fit_hint_flexivel: { pt: 'Folga de 1mm por lado — montagem fácil, bom para pintura.', en: '1mm clearance per side — easy assembly, good for painting.' },
   fit_hint_apertado: { pt: 'Folga de 0,2mm por lado — encaixe justo por pressão.', en: '0.2mm clearance per side — tight press fit.' },
+  show_xray:         { pt: 'Raio-X (folga)', en: 'X-Ray (clearance)' },
+
+  // Edição individual por conector
+  pin_editor:        { pt: 'Conector', en: 'Connector' },
+  pin_editor_done:   { pt: 'Concluir', en: 'Done' },
+  pin_editor_hint:   { pt: 'Clique num conector no viewer para editá-lo individualmente (tipo, tamanho, ângulo).', en: 'Click a connector in the viewer to edit it individually (type, size, angle).' },
+  edit_diameter:     { pt: 'Diâmetro', en: 'Diameter' },
+  edit_depth:        { pt: 'Profundidade', en: 'Depth' },
+  edit_angle_u:      { pt: 'Inclinação A', en: 'Tilt A' },
+  edit_angle_v:      { pt: 'Inclinação B', en: 'Tilt B' },
+
+  // Add all connectors (multi-interface)
+  btn_skip_joints:     { pt: 'Pular encaixes', en: 'Skip joints' },
+  btn_add_all:         { pt: 'Adicionar conectores em todas', en: 'Add all connectors' },
+  pending_interfaces:  { pt: 'interface(s) de corte sem conector.', en: 'cut interface(s) without connectors.' },
 
   // Processing
   processing:        { pt: 'Processando…', en: 'Processing…' },

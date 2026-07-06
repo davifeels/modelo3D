@@ -458,6 +458,253 @@ class TestJointTypesAPI:
                        self._joint_body(sid, cut, fit="banana"))
         assert code == 422
 
+    # ── Edição individual por conector (§2.2) ───────────────────────────
+
+    def test_confirm_com_pins_editados(self):
+        """Confirm com overrides individuais: tipos e tamanhos por pino."""
+        sid, cut = self._setup()
+        pv, _ = _req("POST", "/preview-joints", self._joint_body(sid, cut))
+        assert pv["n_pins"] >= 1
+        pins = [{
+            "position": pv["pins"][0]["position"],
+            "joint_type": "dovetail",
+            "diameter": pv["pin_diameter"] * 1.5,
+            "depth": pv["pin_depth"] * 0.8,
+        }]
+        resp, code = _req("POST", "/confirm", self._joint_body(sid, cut, pins=pins))
+        assert code == 200, f"Falhou: {resp}"
+        for m in resp["parts_meta"]:
+            assert m["watertight"], f"parte {m['name']}: {resp['warnings']}"
+
+    def test_confirm_pin_com_angulo(self):
+        """Direção individual inclinada em relação à normal do corte."""
+        sid, cut = self._setup()
+        pv, _ = _req("POST", "/preview-joints", self._joint_body(sid, cut))
+        n = np.array(cut["cut_normal"], dtype=float)
+        tilted = (n + np.array([0.3, 0.0, 0.0]))
+        tilted /= np.linalg.norm(tilted)
+        pins = [{
+            "position": pv["pins"][0]["position"],
+            "direction": tilted.tolist(),
+        }]
+        resp, code = _req("POST", "/confirm", self._joint_body(sid, cut, pins=pins))
+        assert code == 200, f"Falhou: {resp}"
+
+    def test_confirm_pins_demais_422(self):
+        sid, cut = self._setup()
+        pins = [{"position": [0.0, 0.0, 0.0]}] * 13
+        _, code = _req("POST", "/confirm", self._joint_body(sid, cut, pins=pins))
+        assert code == 422
+
+    def test_confirm_pin_diametro_invalido_422(self):
+        sid, cut = self._setup()
+        pins = [{"position": [0.0, 0.0, 0.0], "diameter": -2.0}]
+        _, code = _req("POST", "/confirm", self._joint_body(sid, cut, pins=pins))
+        assert code == 422
+
+
+# ── Add all connectors: registro multi-interface (§2.3) ───────────────────────
+
+class TestAddAllConnectors:
+
+    def _cut_sphere(self):
+        mesh = trimesh.creation.icosphere(subdivisions=3)
+        sid = _upload_mesh(mesh)
+        painted = [int(i) for i, c in enumerate(mesh.triangles_center) if c[2] > 0]
+        cut, code = _req("POST", "/cut-from-painted", {
+            "session_id": sid, "part_idx": 0,
+            "painted_face_indices": painted,
+        })
+        assert code == 200
+        return sid, cut
+
+    def test_interface_registrada_apos_corte(self):
+        sid, _ = self._cut_sphere()
+        resp, code = _req("GET", f"/interfaces/{sid}")
+        assert code == 200
+        assert resp["n_pending"] == 1
+        itf = resp["pending"][0]
+        assert itf["name_a"].endswith("_base") and itf["name_b"].endswith("_pintado")
+
+    def test_confirm_marca_interface_como_feita(self):
+        sid, cut = self._cut_sphere()
+        _req("POST", "/confirm", {
+            "session_id": sid,
+            "part_a_idx": cut["part_a_idx"], "part_b_idx": cut["part_b_idx"],
+            "cut_origin": cut["cut_origin"], "cut_normal": cut["cut_normal"],
+        })
+        resp, _ = _req("GET", f"/interfaces/{sid}")
+        assert resp["n_pending"] == 0
+
+    def test_confirm_all_processa_todas(self):
+        """Dois cortes sem conector → confirm-all gera nos dois de uma vez."""
+        sid, cut = self._cut_sphere()
+        # Segundo corte: plano no meio da Parte A (idx 0)
+        bbox = cut["parts_meta"][0]["bbox"]
+        mid_z = (bbox["min"][2] + bbox["max"][2]) / 2
+        cut2, code = _req("POST", "/cut", {
+            "session_id": sid, "part_idx": 0, "axis": "z", "position": mid_z,
+        })
+        assert code == 200, f"Falhou: {cut2}"
+        resp, _ = _req("GET", f"/interfaces/{sid}")
+        assert resp["n_pending"] == 2
+
+        result, code = _req("POST", "/confirm-all", {
+            "session_id": sid, "joint_type": "dovetail", "fit": "apertado",
+        })
+        assert code == 200, f"Falhou: {result}"
+        assert result["n_processed"] == 2, f"warnings: {result['warnings']}"
+        resp, _ = _req("GET", f"/interfaces/{sid}")
+        assert resp["n_pending"] == 0
+
+    def test_confirm_all_sem_pendentes(self):
+        mesh = trimesh.creation.icosphere(subdivisions=2)
+        sid = _upload_mesh(mesh)
+        result, code = _req("POST", "/confirm-all", {"session_id": sid})
+        assert code == 200
+        assert result["n_processed"] == 0
+
+    def test_interface_reatribuida_apos_recorte(self):
+        """Recortar uma parte migra a interface pendente p/ o filho certo:
+        toda interface pendente referencia partes que EXISTEM na sessão."""
+        sid, cut = self._cut_sphere()
+        bbox = cut["parts_meta"][0]["bbox"]
+        mid_z = (bbox["min"][2] + bbox["max"][2]) / 2
+        cut2, code = _req("POST", "/cut", {
+            "session_id": sid, "part_idx": 0, "axis": "z", "position": mid_z,
+        })
+        assert code == 200
+        current = {m["name"] for m in cut2["parts_meta"]}
+        resp, _ = _req("GET", f"/interfaces/{sid}")
+        assert resp["n_pending"] == 2  # a antiga migrou + a nova
+        for itf in resp["pending"]:
+            assert itf["name_a"] in current and itf["name_b"] in current
+
+
+# ── Máscara multi-peça: /segment-mask, /mask-split, /cut-by-multi-mask (§1) ───
+
+class TestMultiMaskAPI:
+
+    def _upload_cylinder(self):
+        mesh = trimesh.creation.cylinder(radius=10.0, height=40.0, sections=32)
+        return _upload_mesh(mesh), len(mesh.faces)
+
+    def test_segment_mask_cilindro(self):
+        """Cilindro → 3 regiões (tampa/corpo/tampa); labels cobre todas as faces."""
+        sid, n_faces = self._upload_cylinder()
+        resp, code = _req("POST", "/segment-mask", {
+            "session_id": sid, "part_idx": 0, "granularity": "media",
+        })
+        assert code == 200, f"Falhou: {resp}"
+        assert resp["n_regions"] == 3
+        assert len(resp["labels"]) == n_faces
+        assert sum(resp["region_sizes"].values()) == n_faces
+
+    def test_segment_mask_granularidade_invalida_422(self):
+        sid, _ = self._upload_cylinder()
+        _, code = _req("POST", "/segment-mask", {
+            "session_id": sid, "granularity": "ultra",
+        })
+        assert code == 422
+
+    def test_cut_by_multi_mask_fluxo_completo(self):
+        """segment-mask → cut-by-multi-mask: 3 partes watertight, 2 interfaces
+        pendentes, confirm-all processa as duas."""
+        sid, _ = self._upload_cylinder()
+        seg, _ = _req("POST", "/segment-mask", {"session_id": sid, "granularity": "media"})
+        cut, code = _req("POST", "/cut-by-multi-mask", {
+            "session_id": sid, "part_idx": 0, "labels": seg["labels"],
+        })
+        assert code == 200, f"Falhou: {cut}"
+        assert cut["n_regions"] == 3
+        assert cut["n_interfaces"] == 2
+        for m in cut["parts_meta"]:
+            assert m["watertight"], f"parte {m['name']} não watertight"
+
+        itf, _ = _req("GET", f"/interfaces/{sid}")
+        assert itf["n_pending"] == 2
+
+        result, code = _req("POST", "/confirm-all", {"session_id": sid})
+        assert code == 200, f"Falhou: {result}"
+        assert result["n_processed"] == 2, f"warnings: {result['warnings']}"
+
+    def test_cut_by_multi_mask_labels_tamanho_errado_422(self):
+        sid, _ = self._upload_cylinder()
+        _, code = _req("POST", "/cut-by-multi-mask", {
+            "session_id": sid, "part_idx": 0, "labels": [0, 1, 0],
+        })
+        assert code == 422
+
+    def test_mask_split_esfera_sem_quebras_422(self):
+        """Esfera lisa não tem quebras internas → split da região falha com 422."""
+        mesh = trimesh.creation.icosphere(subdivisions=3)
+        sid = _upload_mesh(mesh)
+        labels = [0] * (len(mesh.faces) // 2) + [1] * (len(mesh.faces) - len(mesh.faces) // 2)
+        _, code = _req("POST", "/mask-split", {
+            "session_id": sid, "part_idx": 0, "labels": labels, "region_id": 0,
+        })
+        assert code == 422
+
+    def test_mask_split_superficie_curva_nao_estilhaca_422(self):
+        """REGRESSÃO: split da parede lisa do cilindro estilhaçava em ~33
+        fatias (Otsu degenerado no ruído de tesselação). Deve dar 422."""
+        sid, _ = self._upload_cylinder()
+        seg, _ = _req("POST", "/segment-mask", {"session_id": sid, "granularity": "media"})
+        # região 0 = maior = parede do cilindro (curva, sem quebras internas)
+        resp, code = _req("POST", "/mask-split", {
+            "session_id": sid, "part_idx": 0, "labels": seg["labels"], "region_id": 0,
+        })
+        assert code == 422, f"Split deveria falhar, mas gerou {resp.get('n_regions')} regiões"
+
+    def test_mask_split_com_quebra_real_funciona(self):
+        """Região que contém quebra de verdade (caixa fundida no cilindro)
+        subdivide em poucas regiões coerentes."""
+        cyl = trimesh.creation.cylinder(radius=10.0, height=40.0, sections=32)
+        box = trimesh.creation.box(extents=[8.0, 8.0, 20.0])
+        box.apply_translation([0, 0, 25.0])
+        mesh = trimesh.boolean.union([cyl, box], engine="manifold")
+        sid = _upload_mesh(mesh)
+        seg, _ = _req("POST", "/segment-mask", {"session_id": sid, "granularity": "baixa"})
+        # Pega a região que contém a tampa superior + caixa (tem quebras de 90°)
+        labels = np.asarray(seg["labels"])
+        n_before = seg["n_regions"]
+        # tenta o split em cada região até uma funcionar (a que tem a caixa)
+        ok = False
+        for rid in range(n_before):
+            resp, code = _req("POST", "/mask-split", {
+                "session_id": sid, "part_idx": 0,
+                "labels": labels.tolist(), "region_id": rid,
+            })
+            if code == 200:
+                ok = True
+                assert resp["n_regions"] > n_before
+                assert resp["n_regions"] <= n_before + 12, \
+                    f"split estilhaçou: {resp['n_regions']} regiões"
+                break
+        assert ok, "nenhuma região aceitou split (esperava a região com a caixa)"
+
+    def test_segment_mask_apos_corte_usa_malha_atual(self):
+        """REGRESSÃO (cache de grafo obsoleto): após um corte, os índices das
+        partes deslocam mas o cache _seg_graph_ da sessão era mantido — a
+        segmentação devolvia labels da malha ANTIGA (tamanho errado)."""
+        sid, _ = self._upload_cylinder()
+        # Força a construção do cache de grafo da parte 0 (malha original)
+        _req("POST", "/segment-mask", {"session_id": sid, "granularity": "media"})
+        # Corta → parte 0 agora é outra malha, com outro nº de faces
+        cut, code = _req("POST", "/cut", {
+            "session_id": sid, "part_idx": 0, "axis": "z", "position": 0.0,
+        })
+        assert code == 200, f"Falhou: {cut}"
+        n_faces_a = cut["parts_meta"][0]["face_count"]
+        resp, code = _req("POST", "/segment-mask", {
+            "session_id": sid, "part_idx": 0, "granularity": "media",
+        })
+        assert code == 200, f"Falhou: {resp}"
+        assert len(resp["labels"]) == n_faces_a, (
+            f"labels tem {len(resp['labels'])} entradas; parte 0 tem {n_faces_a} faces "
+            "— segmentação usou grafo obsoleto de outra malha."
+        )
+
 
 # ── confirm ────────────────────────────────────────────────────────────────────
 

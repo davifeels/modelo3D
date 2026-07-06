@@ -195,3 +195,51 @@ class TestGetCrossSectionPoints:
         """Fora dos limites → retorna fallback sem crash."""
         pts = get_cross_section_points(sphere, 'z', 9999.0)
         assert pts.shape[1] == 3
+
+
+# ── cut_by_multi_mask: corte em N partes pela máscara (§1) ─────────────────────
+
+from src.cutter import cut_by_multi_mask
+from src.segmentation import segment_multi
+
+
+class TestCutByMultiMask:
+
+    def _cylinder_labels(self):
+        mesh = trimesh.creation.cylinder(radius=10.0, height=40.0, sections=32)
+        labels = segment_multi(mesh, "media")
+        return mesh, labels
+
+    def test_tres_partes_watertight(self):
+        mesh, labels = self._cylinder_labels()
+        parts, interfaces = cut_by_multi_mask(mesh, labels)
+        assert len(parts) == 3
+        for p in parts:
+            assert p.is_watertight, "parte multi-mask não watertight"
+
+    def test_duas_interfaces_normais_axiais(self):
+        """Tampa↔corpo (2×): normal da interface deve ser ±Z (eixo do cilindro)."""
+        mesh, labels = self._cylinder_labels()
+        _, interfaces = cut_by_multi_mask(mesh, labels)
+        assert len(interfaces) == 2
+        for itf in interfaces:
+            assert abs(itf["normal"][2]) > 0.9, f"normal não axial: {itf['normal']}"
+
+    def test_a_e_a_regiao_maior(self):
+        """Convenção: A (pinos) = região maior — corpo do cilindro."""
+        mesh, labels = self._cylinder_labels()
+        _, interfaces = cut_by_multi_mask(mesh, labels)
+        ids, sizes = np.unique(labels, return_counts=True)
+        biggest = int(ids[np.argmax(sizes)])
+        for itf in interfaces:
+            assert itf["region_a"] == biggest
+
+    def test_uma_regiao_levanta_erro(self):
+        mesh = trimesh.creation.icosphere(subdivisions=2)
+        with pytest.raises(ValueError):
+            cut_by_multi_mask(mesh, np.zeros(len(mesh.faces), dtype=int))
+
+    def test_labels_tamanho_errado_levanta_erro(self):
+        mesh = trimesh.creation.icosphere(subdivisions=2)
+        with pytest.raises(ValueError):
+            cut_by_multi_mask(mesh, np.zeros(10, dtype=int))

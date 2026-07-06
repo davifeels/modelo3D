@@ -322,3 +322,83 @@ class TestSmartSegment:
         # Não devem ser idênticas (seeds em pólos opostos)
         assert s1 != s2 or len(s1) == n, \
             "Seeds opostos deram exatamente a mesma região (suspeito)"
+
+
+# ── segment_multi: máscara multi-peça com granularidade (§1) ───────────────────
+
+from src.segmentation import segment_multi, GRANULARITY_PRESETS, _build_csr, _merge_small_regions
+
+
+class TestSegmentMulti:
+
+    def _cylinder(self):
+        return trimesh.creation.cylinder(radius=10.0, height=40.0, sections=32)
+
+    def test_cilindro_separa_tampas_do_corpo(self):
+        """Cilindro tem quebras de 90° nas bordas: tampa/corpo/tampa = 3 regiões."""
+        mesh = self._cylinder()
+        labels = segment_multi(mesh, "media")
+        assert len(labels) == len(mesh.faces)
+        assert len(np.unique(labels)) == 3
+
+    @pytest.mark.parametrize("gran", list(GRANULARITY_PRESETS))
+    def test_todas_granularidades_rodam(self, gran):
+        mesh = self._cylinder()
+        labels = segment_multi(mesh, gran)
+        assert len(np.unique(labels)) >= 2
+
+    def test_granularidade_monotonica(self):
+        """Alta granularidade nunca gera MENOS regiões que baixa."""
+        mesh = self._cylinder()
+        n_baixa = len(np.unique(segment_multi(mesh, "baixa")))
+        n_media = len(np.unique(segment_multi(mesh, "media")))
+        n_alta = len(np.unique(segment_multi(mesh, "alta")))
+        assert n_baixa <= n_media <= n_alta
+
+    def test_labels_compactados_por_tamanho(self):
+        """Região 0 é sempre a maior."""
+        mesh = self._cylinder()
+        labels = segment_multi(mesh, "media")
+        ids, sizes = np.unique(labels, return_counts=True)
+        assert list(ids) == list(range(len(ids)))
+        assert sizes[0] == sizes.max()
+
+    def test_granularidade_invalida(self):
+        with pytest.raises(ValueError):
+            segment_multi(self._cylinder(), "ultra")
+
+    def test_merge_de_pecas_soltas(self):
+        """Região minúscula é fundida na vizinha (auto-fix §1)."""
+        mesh = trimesh.creation.icosphere(subdivisions=3)
+        graph, _ = _build_csr(mesh)
+        labels = np.zeros(len(mesh.faces), dtype=np.int64)
+        labels[:3] = 1   # 3 faces 'soltas'
+        merged = _merge_small_regions(graph, labels, min_faces=10)
+        assert len(np.unique(merged)) == 1
+
+    def test_esfera_lisa_uma_regiao_por_baixo(self):
+        """Malha sem quebras → poucas regiões (nada para separar)."""
+        mesh = trimesh.creation.icosphere(subdivisions=3)
+        labels = segment_multi(mesh, "baixa")
+        assert len(np.unique(labels)) <= 2
+
+    def test_cache_de_outra_malha_e_rejeitado(self):
+        """REGRESSÃO: cache de grafo com shape errado (malha antiga) deve ser
+        reconstruído, nunca usado — senão labels saem com tamanho errado."""
+        other = trimesh.creation.icosphere(subdivisions=2)
+        cache = {"csr": _build_csr(other)}
+        mesh = self._cylinder()
+        labels = segment_multi(mesh, "media", _graph_cache=cache)
+        assert len(labels) == len(mesh.faces)
+        # cache foi substituído pelo grafo da malha certa
+        assert cache["csr"][0].shape[0] == len(mesh.faces)
+
+    def test_merge_sem_limite_fixo_de_iteracoes(self):
+        """Muitas micro-regiões (>64) devem TODAS ser fundidas."""
+        mesh = trimesh.creation.icosphere(subdivisions=4)  # 5120 faces
+        graph, _ = _build_csr(mesh)
+        n = len(mesh.faces)
+        labels = np.arange(n, dtype=np.int64) // 4  # ~1280 regiões de 4 faces
+        merged = _merge_small_regions(graph, labels, min_faces=8)
+        ids, sizes = np.unique(merged, return_counts=True)
+        assert sizes.min() >= 8, f"{(sizes < 8).sum()} regiões pequenas sobraram"

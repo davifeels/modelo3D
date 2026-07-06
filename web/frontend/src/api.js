@@ -66,7 +66,7 @@ export const api = {
       fit,
     }),
 
-  confirm: (sessionId, partAIdx, partBIdx, cutOrigin, cutNormal, jointType, fit) =>
+  confirm: (sessionId, partAIdx, partBIdx, cutOrigin, cutNormal, jointType, fit, pins) =>
     req('POST', '/confirm', {
       session_id: sessionId,
       part_a_idx: partAIdx,
@@ -75,6 +75,7 @@ export const api = {
       cut_normal: cutNormal,
       joint_type: jointType,
       fit,
+      pins,
     }),
 
   exportUrl: (sessionId, partIdx, fmt, name) =>
@@ -88,4 +89,10 @@ export const api = {
 
   checkSession: (sessionId) =>
     req('GET', `/session/${sessionId}`),
+
+  getInterfaces: (sessionId) =>
+    req('GET', `/interfaces/${sessionId}`),
+
+  confirmAll: (sessionId, jointType, fit) =>
+    req('POST', '/confirm-all', { session_id: sessionId, joint_type: jointType, fit }),
 }

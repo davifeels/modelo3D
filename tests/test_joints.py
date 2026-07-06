@@ -5,7 +5,7 @@ import pytest
 
 from src.joints import (
     add_joints, JointParams, _offsets_for_n_pins, _make_pin, _make_hole,
-    _male_solids, _female_solids, JOINT_TYPES,
+    _male_solids, _female_solids, JOINT_TYPES, apply_joint_specs,
 )
 
 
@@ -199,3 +199,51 @@ class TestTiposDeConector:
         with pytest.raises(ValueError):
             add_joints(top, bot, np.zeros(3), np.array([0., 0., 1.]),
                        self._params("parafuso"))
+
+
+# ── Specs individuais por conector (§2.2) ──────────────────────────────────────
+
+class TestApplyJointSpecs:
+    """Cada conector com origem, direção e parâmetros próprios."""
+
+    def _box_halves(self):
+        import trimesh.intersections as ti
+        box = trimesh.creation.box(extents=[60., 40., 30.])
+        n = np.array([0., 0., 1.])
+        top = ti.slice_mesh_plane(box, n, np.zeros(3), cap=True)
+        bot = ti.slice_mesh_plane(box, -n, np.zeros(3), cap=True)
+        return top, bot
+
+    def test_tipos_mistos_no_mesmo_corte(self):
+        """Um pino + um dovetail no mesmo corte, tamanhos diferentes."""
+        top, bot = self._box_halves()
+        z = np.array([0., 0., 1.])
+        specs = [
+            (np.array([-15., 0., 0.]), z, JointParams(4.0, 6.0, 0.2, 1, "pin")),
+            (np.array([15., 0., 0.]), z, JointParams(8.0, 10.0, 0.2, 1, "dovetail")),
+        ]
+        new_a, new_b, warns = apply_joint_specs(top, bot, specs)
+        assert new_a.volume > top.volume, warns
+        assert new_b.volume < bot.volume, warns
+        assert new_a.is_watertight and new_b.is_watertight, warns
+
+    def test_direcao_inclinada(self):
+        """Ângulo da conexão (§2.2): eixo inclinado ~20° da normal do corte."""
+        top, bot = self._box_halves()
+        d = np.array([0.34, 0., 0.94])
+        d /= np.linalg.norm(d)
+        specs = [(np.zeros(3), d, JointParams(6.0, 8.0, 0.2, 1, "pin"))]
+        new_a, new_b, warns = apply_joint_specs(top, bot, specs)
+        assert new_a.volume > top.volume, warns
+        assert new_a.is_watertight and new_b.is_watertight, warns
+
+    def test_tipo_invalido_falha_antes_das_booleanas(self):
+        top, bot = self._box_halves()
+        specs = [
+            (np.zeros(3), np.array([0., 0., 1.]), JointParams(6.0, 8.0, 0.2, 1, "pin")),
+            (np.zeros(3), np.array([0., 0., 1.]), JointParams(6.0, 8.0, 0.2, 1, "banana")),
+        ]
+        with pytest.raises(ValueError):
+            apply_joint_specs(top, bot, specs)
+        # nada foi aplicado (validação vem antes)
+        assert len(top.faces) > 0

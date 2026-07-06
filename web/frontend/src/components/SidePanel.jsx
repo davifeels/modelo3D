@@ -7,6 +7,14 @@ const IconReset = () => (
     <path d="M2 7a5 5 0 1 0 1.5-3.5L2 2v3.5h3.5L4 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
   </svg>
 )
+const IconXray = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+    <rect x="1.5" y="3" width="11" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+    <circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1" opacity=".5"/>
+    <path d="M4 7h1.2M8.8 7H10" stroke="currentColor" strokeWidth="1" strokeLinecap="round" opacity=".5"/>
+  </svg>
+)
+
 const IconWireframe = () => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
     <path d="M7 1.5l5 3v5l-5 3-5-3v-5l5-3z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
@@ -47,7 +55,7 @@ export function renderABText(s) {
 }
 
 export default function SidePanel({ viewerRef }) {
-  const { step, showWireframe, showGrid, lang } = useStore()
+  const { step, showWireframe, showGrid, showXray, lang } = useStore()
 
   function resetCamera() { viewerRef?.current?.resetCamera?.() }
   function fitView()     { viewerRef?.current?.fitView?.() }
@@ -85,6 +93,16 @@ export default function SidePanel({ viewerRef }) {
             <button
               className={`toggle-switch ${showGrid ? 'on' : ''}`}
               onClick={() => useStore.setState(s => ({ showGrid: !s.showGrid }))}
+            >
+              <span className="toggle-knob" />
+            </button>
+          </div>
+
+          <div className="tool-row-toggle">
+            <span className="trt-left"><IconXray /> {t('show_xray')}</span>
+            <button
+              className={`toggle-switch ${showXray ? 'on' : ''}`}
+              onClick={() => useStore.setState(s => ({ showXray: !s.showXray }))}
             >
               <span className="toggle-knob" />
             </button>

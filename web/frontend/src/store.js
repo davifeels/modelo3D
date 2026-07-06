@@ -42,6 +42,7 @@ export const useStore = create((set, get) => ({
   jointParams: null,  // { n_pins, pin_diameter, pin_depth, tolerance, joint_type, fit }
   jointType: 'pin',   // 'pin' | 'ball' | 'dovetail'
   jointFit: 'flexivel', // 'flexivel' | 'apertado'
+  selectedPinIdx: null, // conector selecionado p/ edição individual
 
   // Result
   warnings: [],
@@ -52,6 +53,7 @@ export const useStore = create((set, get) => ({
   showWireframe: false,
   showGrid: true,
   showJoints: true,
+  showXray: false,    // transparência p/ inspecionar folga macho/fêmea
 
   // Export
   exportFmt: 'stl',
@@ -126,10 +128,17 @@ export const useStore = create((set, get) => ({
   },
 
   afterPreview: (jointPins, jointParams) =>
-    set({ jointPins, jointParams, step: 'previewing' }),
+    set({ jointPins, jointParams, step: 'previewing', selectedPinIdx: null }),
 
   afterConfirm: (parts, warnings) =>
-    set({ parts, warnings, step: 'result' }),
+    set({ parts, warnings, step: 'result', selectedPinIdx: null }),
+
+  setSelectedPin: (selectedPinIdx) => set({ selectedPinIdx }),
+
+  // Edição individual (§2.2): aplica patch a um conector do preview
+  updatePin: (idx, patch) => set(s => ({
+    jointPins: s.jointPins.map((p, i) => (i === idx ? { ...p, ...patch } : p)),
+  })),
 
   // Inicia um novo corte em uma das partes já geradas.
   // As demais partes são marcadas como prontas (por NOME); a parte escolhida

@@ -11,11 +11,35 @@ Pipeline:
 from __future__ import annotations
 import numpy as np
 from scipy.sparse import csr_matrix
-from scipy.sparse.csgraph import breadth_first_order
+from scipy.sparse.csgraph import breadth_first_order, connected_components
 import trimesh
+
+# Presets de granularidade (§1): fator sobre o threshold Otsu global e
+# tamanho mínimo de região (fração das faces) antes do auto-merge.
+GRANULARITY_PRESETS = {
+    "baixa": {"thr_scale": 1.6, "min_pct": 0.05},
+    "media": {"thr_scale": 1.0, "min_pct": 0.02},
+    "alta":  {"thr_scale": 0.55, "min_pct": 0.005},
+}
 
 
 # ── Construção do grafo CSR (zero loops Python) ───────────────────────────────
+
+def _cached_graph(mesh: trimesh.Trimesh, _graph_cache: dict | None):
+    """
+    Grafo CSR do cache se corresponder à malha; senão (re)constrói.
+    A validação por shape é essencial: o cache da sessão é indexado por
+    part_idx e os índices deslocam a cada corte — um grafo de OUTRA malha
+    geraria labels de tamanho errado ou regiões sem sentido.
+    """
+    if _graph_cache is not None and 'csr' in _graph_cache:
+        graph, sharpness = _graph_cache['csr']
+        if graph.shape[0] == len(mesh.faces):
+            return graph, sharpness
+    graph, sharpness = _build_csr(mesh)
+    if _graph_cache is not None:
+        _graph_cache['csr'] = (graph, sharpness)
+    return graph, sharpness
 
 def _build_csr(mesh: trimesh.Trimesh):
     """
@@ -196,6 +220,83 @@ def _local_minima(arr: np.ndarray, min_distance: int = 5, min_prominence: float 
     return result
 
 
+def _merge_small_regions(graph: csr_matrix, labels: np.ndarray, min_faces: int) -> np.ndarray:
+    """
+    Auto-fix de 'peças soltas' (§1): regiões menores que min_faces são
+    fundidas na vizinha com maior fronteira compartilhada (ou na maior
+    região, se não tocarem ninguém — fragmento desconexo).
+    """
+    labels = labels.copy()
+    coo = graph.tocoo()
+    # Cada iteração funde exatamente 1 região → limite = nº inicial de regiões.
+    # (Limite fixo baixo deixava micro-regiões sem merge em malhas ruidosas.)
+    for _ in range(int(len(np.unique(labels)))):
+        ids, sizes = np.unique(labels, return_counts=True)
+        if len(ids) <= 1:
+            break
+        small_ids = ids[sizes < min_faces]
+        if len(small_ids) == 0:
+            break
+        # menor primeiro — evita fundir duas pequenas na ordem errada
+        sid = small_ids[np.argmin(sizes[sizes < min_faces])]
+        la, lb = labels[coo.row], labels[coo.col]
+        touching = lb[(la == sid) & (lb != sid)]
+        if len(touching) > 0:
+            # vizinha com mais arestas compartilhadas
+            n_ids, n_counts = np.unique(touching, return_counts=True)
+            target = n_ids[np.argmax(n_counts)]
+        else:
+            # fragmento desconexo — funde na maior região
+            target = ids[np.argmax(sizes)]
+            if target == sid:
+                break
+        labels[labels == sid] = target
+    return labels
+
+
+def segment_multi(
+    mesh: trimesh.Trimesh,
+    granularity: str = "media",
+    _graph_cache: dict | None = None,
+) -> np.ndarray:
+    """
+    Segmenta a malha INTEIRA em N regiões (máscara multi-peça, §1):
+    corta as arestas do grafo de adjacência com ângulo diedro acima do
+    threshold (Otsu global × preset) e rotula as componentes conexas.
+    Regiões pequenas são auto-fundidas (peças soltas).
+    Retorna labels (n_faces,) com ids compactados 0..k-1, ordenados por
+    tamanho decrescente (0 = maior região).
+    """
+    if granularity not in GRANULARITY_PRESETS:
+        raise ValueError(f"Granularidade desconhecida: {granularity!r}")
+    n_faces = len(mesh.faces)
+    if n_faces == 0:
+        return np.zeros(0, dtype=np.int64)
+
+    graph, sharpness = _cached_graph(mesh, _graph_cache)
+
+    cfg = GRANULARITY_PRESETS[granularity]
+    thr = float(np.clip(_otsu(graph.data) * cfg["thr_scale"], 8.0, 120.0))
+
+    # Grafo filtrado: mantém só arestas 'suaves' (ângulo < thr)
+    coo = graph.tocoo()
+    keep = coo.data < thr
+    filtered = csr_matrix(
+        (np.ones(keep.sum(), dtype=np.int8), (coo.row[keep], coo.col[keep])),
+        shape=graph.shape,
+    )
+    _, labels = connected_components(filtered, directed=False)
+
+    min_faces = max(1, int(n_faces * cfg["min_pct"]))
+    labels = _merge_small_regions(graph, labels, min_faces)
+
+    # Compacta ids por tamanho decrescente
+    ids, sizes = np.unique(labels, return_counts=True)
+    order = ids[np.argsort(-sizes)]
+    remap = {old: new for new, old in enumerate(order)}
+    return np.array([remap[l] for l in labels], dtype=np.int64)
+
+
 def smart_segment(
     mesh: trimesh.Trimesh,
     seed_face_idx: int,
@@ -211,13 +312,8 @@ def smart_segment(
     if n_faces == 0 or seed_face_idx >= n_faces:
         return [seed_face_idx]
 
-    # Reutiliza grafo cacheado se disponível
-    if _graph_cache is not None and 'csr' in _graph_cache:
-        graph, sharpness = _graph_cache['csr']
-    else:
-        graph, sharpness = _build_csr(mesh)
-        if _graph_cache is not None:
-            _graph_cache['csr'] = (graph, sharpness)
+    # Reutiliza grafo cacheado se disponível (validado contra a malha)
+    graph, sharpness = _cached_graph(mesh, _graph_cache)
 
     # Threshold local: Otsu sobre vizinhança imediata (2-hop)
     seed_row   = graph.getrow(seed_face_idx)

@@ -405,6 +405,7 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
   const brushCursorRef = useRef()
   const cutPlaneRef = useRef()
   const pinPreviewRef = useRef([])
+  const overlayGroupRef = useRef()   // grupo Z-up p/ overlays em mesh space
   const gridRef = useRef()
 
   const theme = useStore(s => s.theme)
@@ -412,8 +413,8 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
   const {
     step, sessionId, parts, selectedPart,
     paintMode, brushSize, fillAngle, fillRadius,
-    showWireframe, showGrid, showJoints,
-    jointPins, cutOrigin, cutNormal,
+    showWireframe, showGrid, showJoints, showXray,
+    jointPins, cutOrigin, cutNormal, selectedPinIdx,
     partAIdx, partBIdx,
     activeCutPlane, modelBounds,
     addPaintedFaces, removePaintedFaces, clearPaintedFaces, setError,
@@ -463,6 +464,14 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     const scene = new THREE.Scene()
     scene.fog = new THREE.FogExp2(tc.fog, 0.004)
     sceneRef.current = scene
+
+    // Grupo de overlays em coordenadas do BACKEND (mesh space, Z-up):
+    // mesma rotação aplicada às partes — pinos/planos entram aqui com
+    // as coordenadas cruas da API e ficam alinhados às malhas.
+    const overlayGroup = new THREE.Group()
+    overlayGroup.rotation.x = -Math.PI / 2
+    scene.add(overlayGroup)
+    overlayGroupRef.current = overlayGroup
 
     // Grid
     const grid = new THREE.GridHelper(300, 60, tc.gridA, tc.gridB)
@@ -566,6 +575,7 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     for (const m of meshObjsRef.current) {
       sceneRef.current.remove(m)
       m.geometry.dispose()
+      m.material.dispose()
     }
     meshObjsRef.current = []
     meshDataRef.current = []
@@ -687,6 +697,7 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
       // Segundo fitView após o primeiro render garante bbox correta
       requestAnimationFrame(() => fitView())
       showWireframeMode(showWireframe)
+      showXrayMode(useStore.getState().showXray)
       if (step === 'previewing') updatePinPreview()
 
       // Restaura pintura após reload (paintedFaces persistido no localStorage)
@@ -908,6 +919,21 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     cursor.scale.set(currentBrushSizeCursor, currentBrushSizeCursor, currentBrushSizeCursor)
   }
 
+  // ── Seleção de conector no preview (§2.2) ────────────────────────────────
+  const pinPickDownRef = useRef(null)
+
+  function pickPinAt(e) {
+    const canvas = canvasRef.current
+    const rect = canvas.getBoundingClientRect()
+    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+    const y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+    const raycaster = new THREE.Raycaster()
+    raycaster.setFromCamera({ x, y }, camRef.current)
+    const hits = raycaster.intersectObjects(pinPreviewRef.current)
+    const idx = hits.length ? hits[0].object.userData.pinIdx : null
+    useStore.getState().setSelectedPin(idx ?? null)
+  }
+
   // ── Mouse events ──────────────────────────────────────────────────────────
   const isPainting = useRef(false)
   const isProcessingFill = useRef(false) // guard contra cliques simultâneos no conta-gotas
@@ -918,6 +944,7 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     if (!canvas) return
 
     function onMouseDown(e) {
+      if (e.button === 0) pinPickDownRef.current = { x: e.clientX, y: e.clientY }
       if (step !== 'painting' || e.button !== 0) return
       e.preventDefault()
       isPainting.current = true
@@ -935,7 +962,16 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
       }
     }
 
-    function onMouseUp() {
+    function onMouseUp(e) {
+      // Clique (sem drag) no step previewing seleciona um conector p/ edição
+      if (step === 'previewing' && pinPickDownRef.current) {
+        const d = Math.hypot(
+          e.clientX - pinPickDownRef.current.x,
+          e.clientY - pinPickDownRef.current.y,
+        )
+        pinPickDownRef.current = null
+        if (d < 5) pickPinAt(e)
+      }
       if (isPainting.current) {
         isPainting.current = false
         if (paintMode === 'brush' && brushBatchRef.current.size > 0) {
@@ -1098,13 +1134,27 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     showWireframeMode(showWireframe)
   }, [showWireframe])
 
+  // ── X-Ray toggle (§2.3: inspecionar folga macho/fêmea) ───────────────────
+  function showXrayMode(on) {
+    for (const m of meshObjsRef.current) {
+      m.material.transparent = on
+      m.material.opacity = on ? 0.32 : 1.0
+      m.material.depthWrite = !on
+      m.material.needsUpdate = true
+    }
+  }
+
+  useEffect(() => {
+    showXrayMode(showXray)
+  }, [showXray])
+
   // ── Joint preview pins ────────────────────────────────────────────────────
   function updatePinPreview() {
-    const scene = sceneRef.current
-    if (!scene) return
+    const group = overlayGroupRef.current
+    if (!group) return
     // Remove old (dispose para evitar memory leak na GPU)
     for (const p of pinPreviewRef.current) {
-      scene.remove(p)
+      group.remove(p)
       p.geometry.dispose()
       p.material.dispose()
     }
@@ -1114,11 +1164,16 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     if (!pins?.length) return
     // No step result o overlay é controlado pelo toggle "Exibir encaixes"
     const visible = step === 'result' ? useStore.getState().showJoints : true
+    const selectedIdx = useStore.getState().selectedPinIdx
 
-    for (const pin of pins) {
+    pins.forEach((pin, pinIdx) => {
       const [px, py, pz] = pin.position
       const dir = new THREE.Vector3(...pin.direction).normalize()
-      const pinMat = new THREE.MeshPhongMaterial({ color: C.pin, transparent: true, opacity: 0.7 })
+      const selected = pinIdx === selectedIdx
+      const pinMat = new THREE.MeshPhongMaterial({
+        color: C.pin, transparent: true, opacity: selected ? 0.95 : 0.7,
+        emissive: selected ? new THREE.Color(0x2244aa) : new THREE.Color(0x000000),
+      })
 
       const addMale = (geo, alongDir) => {
         const m = new THREE.Mesh(geo, pinMat)
@@ -1126,7 +1181,8 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
         m.position.addScaledVector(dir, alongDir)
         m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
         m.visible = visible
-        scene.add(m)
+        m.userData.pinIdx = pinIdx
+        group.add(m)
         pinPreviewRef.current.push(m)
       }
 
@@ -1153,25 +1209,26 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
       holeMesh.position.addScaledVector(dir, -pin.depth / 2)
       holeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir)
       holeMesh.visible = visible
-      scene.add(holeMesh)
+      holeMesh.userData.pinIdx = pinIdx
+      group.add(holeMesh)
       pinPreviewRef.current.push(holeMesh)
-    }
+    })
   }
 
   useEffect(() => {
     // Overlay dos pinos no preview E no resultado (controlado por showJoints)
     if (step === 'previewing' || step === 'result') updatePinPreview()
     else {
-      const scene = sceneRef.current
-      if (!scene) return
+      const group = overlayGroupRef.current
+      if (!group) return
       for (const p of pinPreviewRef.current) {
-        scene.remove(p)
+        group.remove(p)
         p.geometry.dispose()
         p.material.dispose()
       }
       pinPreviewRef.current = []
     }
-  }, [step, jointPins])
+  }, [step, jointPins, selectedPinIdx])
 
   // ── Joint visibility toggle ───────────────────────────────────────────────
   useEffect(() => {
@@ -1185,7 +1242,8 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     const scene = sceneRef.current
     if (!scene) return
 
-    if (autoCutPlaneRef.current) { scene.remove(autoCutPlaneRef.current); autoCutPlaneRef.current = null }
+    const group = overlayGroupRef.current
+    if (autoCutPlaneRef.current) { group.remove(autoCutPlaneRef.current); autoCutPlaneRef.current = null }
     if (step !== 'cutting' || !activeCutPlane) return
 
     const bounds = modelBounds || { min: [-100,-100,-100], max: [100,100,100] }
@@ -1221,7 +1279,7 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     const edges = new THREE.LineSegments(edgeGeo, edgeMat)
     plane.add(edges)
 
-    scene.add(plane)
+    group.add(plane)
     autoCutPlaneRef.current = plane
   }, [step, activeCutPlane, modelBounds])
 
@@ -1229,7 +1287,8 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
   useEffect(() => {
     const scene = sceneRef.current
     if (!scene) return
-    if (cutPlaneRef.current) { scene.remove(cutPlaneRef.current); cutPlaneRef.current = null }
+    const group = overlayGroupRef.current
+    if (cutPlaneRef.current) { group.remove(cutPlaneRef.current); cutPlaneRef.current = null }
     if (!cutOrigin || !cutNormal || step === 'result') return
 
     const [ox, oy, oz] = cutOrigin
@@ -1243,7 +1302,7 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
     const plane = new THREE.Mesh(geo, mat)
     plane.position.set(ox, oy, oz)
     plane.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal)
-    scene.add(plane)
+    group.add(plane)
     cutPlaneRef.current = plane
   }, [cutOrigin, cutNormal, step])
 

@@ -16,13 +16,14 @@ from src.importer import load_mesh, HEAVY_MESH_THRESHOLD
 # Executor persistente — CRÍTICO: sem referência persistente o GC destrói o executor
 # e bloqueia o thread principal esperando as tasks terminarem.
 _bg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="prebuild")
-from src.segmentation import smart_segment
+from src.segmentation import smart_segment, segment_multi, GRANULARITY_PRESETS
 from src.cutter import (
     cut_mesh, split_by_components, region_grow_and_cut,
-    get_cross_section_points, AXIS_NORMALS, cut_by_mask,
+    get_cross_section_points, AXIS_NORMALS, cut_by_mask, cut_by_multi_mask,
 )
 from src.joints import (
     add_joints, JointParams, plan_pin_origins, boundary_perimeter, JOINT_TYPES,
+    apply_joint_specs,
 )
 
 router = APIRouter(prefix="/api")
@@ -84,6 +85,14 @@ class PreviewJointsReq(BaseModel):
     joint_type: Optional[str] = None    # "pin" | "ball" | "dovetail" (None = pin)
     fit: Optional[str] = None           # "flexivel" | "apertado" (None = flexivel)
 
+class PinOverride(BaseModel):
+    """Parâmetros individuais de UM conector (§2.2 — edição por conector)."""
+    position: List[float]
+    direction: Optional[List[float]] = None   # None = cut_normal
+    joint_type: Optional[str] = None          # None = joint_type global do request
+    diameter: Optional[float] = None          # mm; None = automático
+    depth: Optional[float] = None             # mm; None = automático
+
 class ConfirmReq(BaseModel):
     session_id: str
     part_a_idx: int
@@ -92,6 +101,7 @@ class ConfirmReq(BaseModel):
     cut_normal: List[float]
     joint_type: Optional[str] = None    # deve ser o mesmo usado no preview
     fit: Optional[str] = None           # deve ser o mesmo usado no preview
+    pins: Optional[List[PinOverride]] = None  # None = planejamento automático
 
 class PaintedCutReq(BaseModel):
     session_id: str
@@ -113,15 +123,22 @@ class SmartSelectReq(BaseModel):
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 
+_MAX_UPLOAD_MB = 200
+
+
 @router.post("/upload")
 async def upload(file: UploadFile = File(...)):
     import asyncio, tempfile
-    allowed = {".stl", ".obj", ".STL", ".OBJ"}
+    allowed = {".stl", ".obj"}
     ext = os.path.splitext(file.filename)[1]
-    if ext not in allowed:
+    if ext.lower() not in allowed:
         raise HTTPException(400, "Formato não suportado. Use STL ou OBJ.")
 
-    data = await file.read()
+    # Limite de tamanho — sem ele um upload gigante derruba o processo por RAM
+    max_bytes = _MAX_UPLOAD_MB * 1024 * 1024
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise HTTPException(413, f"Arquivo maior que {_MAX_UPLOAD_MB} MB.")
 
     # Salva em arquivo temporário para trimesh carregar
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
@@ -165,7 +182,9 @@ async def upload(file: UploadFile = File(...)):
             try:
                 graph_cache = {'csr': _seg_build_csr(p)}
                 s2 = sess.get(sid)
-                if s2:
+                # Só grava se a parte ainda é a mesma — um corte durante o
+                # prebuild deslocaria os índices e o grafo iria para a parte errada
+                if s2 and i < len(s2["parts"]) and s2["parts"][i] is p:
                     s2.setdefault(f"_seg_graph_{i}", {}).update(graph_cache)
             except Exception:
                 pass
@@ -380,6 +399,9 @@ def region_grow(req: RegionGrowReq):
     names[req.part_idx:req.part_idx + 1] = [name_base, name_painted]
 
     sess.update(req.session_id, parts=parts, names=names)
+    _reassign_interfaces(req.session_id, s, base_name,
+                         [name_base, name_painted], [part_base, part_painted])
+    _register_interface(req.session_id, s, cut_origin, -cut_normal, name_base, name_painted)
 
     return {
         "cut_origin": cut_origin.tolist(),
@@ -440,6 +462,9 @@ def cut_from_painted(req: PaintedCutReq):
     parts[req.part_idx:req.part_idx + 1] = [part_base, part_painted]
     names[req.part_idx:req.part_idx + 1] = [name_base, name_painted]
     sess.update(req.session_id, parts=parts, names=names)
+    _reassign_interfaces(req.session_id, s, base_name,
+                         [name_base, name_painted], [part_base, part_painted])
+    _register_interface(req.session_id, s, origin, -normal, name_base, name_painted)
 
     total = len(part_painted.faces) + len(part_base.faces)
     return {
@@ -451,6 +476,136 @@ def cut_from_painted(req: PaintedCutReq):
         "paint_pct": round(len(part_painted.faces) / total * 100, 1),
         "painted_watertight": bool(part_painted.is_watertight),
         "base_watertight": bool(part_base.is_watertight),
+        "parts_meta": _parts_meta(parts, names),
+    }
+
+
+# ── Máscara multi-peça (§1 — modo Professional) ───────────────────────────────
+
+class SegmentMaskReq(BaseModel):
+    session_id: str
+    part_idx: int = 0
+    granularity: str = "media"      # "baixa" | "media" | "alta"
+
+class MaskSplitReq(BaseModel):
+    session_id: str
+    part_idx: int = 0
+    labels: List[int]
+    region_id: int
+
+class MultiMaskCutReq(BaseModel):
+    session_id: str
+    part_idx: int = 0
+    labels: List[int]
+
+
+@router.post("/segment-mask")
+def segment_mask(req: SegmentMaskReq):
+    """Gera a máscara de segmentação (labels por face) SEM cortar — revisão prévia."""
+    s = _get_session(req.session_id)
+    _check_idx(req.part_idx, s["parts"])
+    mesh = s["parts"][req.part_idx]
+    if req.granularity not in GRANULARITY_PRESETS:
+        raise HTTPException(
+            422, f"Granularidade inválida: {req.granularity!r}. Use {list(GRANULARITY_PRESETS)}."
+        )
+    graph_cache = s.setdefault(f"_seg_graph_{req.part_idx}", {})
+    try:
+        labels = segment_multi(mesh, req.granularity, _graph_cache=graph_cache)
+    except Exception as e:
+        raise HTTPException(500, f"Erro na segmentação: {e}")
+    ids, sizes = np.unique(labels, return_counts=True)
+    return {
+        "labels": labels.tolist(),
+        "n_regions": int(len(ids)),
+        "region_sizes": {int(i): int(c) for i, c in zip(ids, sizes)},
+    }
+
+
+@router.post("/mask-split")
+def mask_split(req: MaskSplitReq):
+    """Ferramenta Split: subdivide UMA região da máscara em sub-regiões."""
+    s = _get_session(req.session_id)
+    _check_idx(req.part_idx, s["parts"])
+    mesh = s["parts"][req.part_idx]
+    labels = np.asarray(req.labels, dtype=np.int64)
+    if len(labels) != len(mesh.faces):
+        raise HTTPException(422, "labels não corresponde ao número de faces da parte.")
+    region_faces = np.nonzero(labels == req.region_id)[0]
+    if len(region_faces) == 0:
+        raise HTTPException(422, f"Região {req.region_id} não existe na máscara.")
+
+    sub = mesh.submesh([region_faces], append=True)
+    # Guard: sem quebra REAL dentro da região (ex.: superfície curva lisa),
+    # o Otsu degenera para o ruído de tesselação e estilhaça a região em
+    # dezenas de fatias — rejeita antes de segmentar.
+    ang = sub.face_adjacency_angles
+    if len(ang) == 0 or float(np.degrees(ang.max())) < 20.0:
+        raise HTTPException(422, "Não foi possível subdividir esta região (sem quebras internas).")
+    try:
+        sub_labels = segment_multi(sub, "alta")
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao subdividir: {e}")
+    if len(np.unique(sub_labels)) < 2:
+        raise HTTPException(422, "Não foi possível subdividir esta região (sem quebras internas).")
+
+    # sub-região 0 mantém o id original; as demais ganham ids novos
+    new_labels = labels.copy()
+    next_id = int(labels.max()) + 1
+    for sub_id in np.unique(sub_labels):
+        if sub_id == 0:
+            continue
+        new_labels[region_faces[sub_labels == sub_id]] = next_id
+        next_id += 1
+    ids, sizes = np.unique(new_labels, return_counts=True)
+    return {
+        "labels": new_labels.tolist(),
+        "n_regions": int(len(ids)),
+        "region_sizes": {int(i): int(c) for i, c in zip(ids, sizes)},
+    }
+
+
+@router.post("/cut-by-multi-mask")
+def cut_by_multi_mask_route(req: MultiMaskCutReq):
+    """
+    Aplica a máscara: divide a parte em N peças fechadas e registra a
+    interface de cada par adjacente (prontas para 'Add all connectors').
+    """
+    s = _get_session(req.session_id)
+    _check_idx(req.part_idx, s["parts"])
+    mesh = s["parts"][req.part_idx]
+    base_name = s["names"][req.part_idx]
+    labels = np.asarray(req.labels, dtype=np.int64)
+
+    try:
+        new_parts, interfaces = cut_by_multi_mask(mesh, labels)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao aplicar máscara: {e}")
+
+    region_ids = [int(r) for r in np.unique(labels)]
+    new_names = [f"{base_name}_r{str(i + 1).zfill(2)}" for i in range(len(new_parts))]
+    name_by_region = dict(zip(region_ids, new_names))
+
+    parts = list(s["parts"])
+    names = list(s["names"])
+    parts[req.part_idx:req.part_idx + 1] = new_parts
+    names[req.part_idx:req.part_idx + 1] = new_names
+    sess.update(req.session_id, parts=parts, names=names)
+    # limpa cache de grafo da parte antiga (faces mudaram)
+    s.pop(f"_seg_graph_{req.part_idx}", None)
+
+    _reassign_interfaces(req.session_id, s, base_name, new_names, new_parts)
+    for itf in interfaces:
+        _register_interface(
+            req.session_id, s, itf["origin"], itf["normal"],
+            name_by_region[itf["region_a"]], name_by_region[itf["region_b"]],
+        )
+
+    return {
+        "n_regions": len(new_parts),
+        "n_interfaces": len(interfaces),
         "parts_meta": _parts_meta(parts, names),
     }
 
@@ -483,6 +638,8 @@ def cut(req: CutReq):
     parts[req.part_idx:req.part_idx + 1] = [part_a, part_b]
     names[req.part_idx:req.part_idx + 1] = [na, nb]
     sess.update(req.session_id, parts=parts, names=names)
+    _reassign_interfaces(req.session_id, s, base_name, [na, nb], [part_a, part_b])
+    _register_interface(req.session_id, s, origin, normal, na, nb)
 
     return {
         "cut_origin": origin.tolist(),
@@ -515,6 +672,7 @@ def split_components(req: SplitReq):
     parts[req.part_idx:req.part_idx + 1] = components
     names[req.part_idx:req.part_idx + 1] = new_names
     sess.update(req.session_id, parts=parts, names=names)
+    _reassign_interfaces(req.session_id, s, base_name, new_names, components)
 
     return {"split": True, "n_components": len(components), "parts_meta": _parts_meta(parts, names)}
 
@@ -587,25 +745,96 @@ def confirm(req: ConfirmReq):
     params = auto_joint_params(mesh_a, mesh_b, cut_pts, cut_normal)
     params.joint_type = _validate_joint_type(req.joint_type)
     params.tolerance = JOINT_FITS[_validate_fit(req.fit)]
-    # Mesmo planejamento do preview — o usuário confirma o que viu
-    origins, notes = plan_pin_origins(mesh_a, mesh_b, cut_pts, cut_normal, params)
 
-    try:
-        new_a, new_b, warnings = add_joints(
-            mesh_a, mesh_b, cut_origin, cut_normal, params, cut_pts,
-            origins=origins,
-        )
-    except Exception as e:
-        raise HTTPException(500, f"Erro ao gerar encaixes: {e}")
+    if req.pins:
+        # §2.2: cada conector com parâmetros próprios (editados no preview)
+        specs = _pin_overrides_to_specs(req.pins, cut_normal, params)
+        notes = []
+        try:
+            new_a, new_b, warnings = apply_joint_specs(mesh_a, mesh_b, specs)
+        except Exception as e:
+            raise HTTPException(500, f"Erro ao gerar encaixes: {e}")
+    else:
+        # Mesmo planejamento do preview — o usuário confirma o que viu
+        origins, notes = plan_pin_origins(mesh_a, mesh_b, cut_pts, cut_normal, params)
+        try:
+            new_a, new_b, warnings = add_joints(
+                mesh_a, mesh_b, cut_origin, cut_normal, params, cut_pts,
+                origins=origins,
+            )
+        except Exception as e:
+            raise HTTPException(500, f"Erro ao gerar encaixes: {e}")
     warnings = notes + warnings
 
     parts = list(s["parts"])
     parts[req.part_a_idx] = new_a
     parts[req.part_b_idx] = new_b
     sess.update(req.session_id, parts=parts)
+    _mark_interface_done(req.session_id, s,
+                         s["names"][req.part_a_idx], s["names"][req.part_b_idx])
 
     return {
         "warnings": warnings,
+        "parts_meta": _parts_meta(parts, s["names"]),
+    }
+
+
+# ── Multi-interface: Add all connectors (§2.3) ───────────────────────────────
+
+@router.get("/interfaces/{sid}")
+def list_interfaces(sid: str):
+    """Interfaces de corte pendentes (sem conector) da sessão."""
+    s = _get_session(sid)
+    pending = _pending_interfaces(s)
+    return {"pending": pending, "n_pending": len(pending)}
+
+
+class ConfirmAllReq(BaseModel):
+    session_id: str
+    joint_type: Optional[str] = None
+    fit: Optional[str] = None
+
+
+@router.post("/confirm-all")
+def confirm_all(req: ConfirmAllReq):
+    """Gera conectores default em TODAS as interfaces de corte pendentes."""
+    s = _get_session(req.session_id)
+    jt = _validate_joint_type(req.joint_type)
+    tol = JOINT_FITS[_validate_fit(req.fit)]
+    pending = _pending_interfaces(s)
+    if not pending:
+        return {"n_processed": 0, "warnings": [],
+                "parts_meta": _parts_meta(s["parts"], s["names"])}
+
+    parts = list(s["parts"])
+    all_warnings = []
+    n_done = 0
+    for itf in pending:
+        ia, ib = itf["part_a_idx"], itf["part_b_idx"]
+        mesh_a, mesh_b = parts[ia], parts[ib]
+        origin = np.array(itf["origin"], dtype=float)
+        normal = np.array(itf["normal"], dtype=float)
+        prefix = f"{itf['name_a']} ↔ {itf['name_b']}: "
+        try:
+            cut_pts = _get_cut_pts(mesh_a, origin, normal, other=mesh_b)
+            params = auto_joint_params(mesh_a, mesh_b, cut_pts, normal)
+            params.joint_type = jt
+            params.tolerance = tol
+            origins, notes = plan_pin_origins(mesh_a, mesh_b, cut_pts, normal, params)
+            new_a, new_b, warns = add_joints(
+                mesh_a, mesh_b, origin, normal, params, cut_pts, origins=origins,
+            )
+            parts[ia], parts[ib] = new_a, new_b
+            n_done += 1
+            all_warnings += [prefix + w for w in (notes + warns)]
+            _mark_interface_done(req.session_id, s, itf["name_a"], itf["name_b"])
+        except Exception as e:
+            all_warnings.append(prefix + f"falhou — {e}")
+
+    sess.update(req.session_id, parts=parts)
+    return {
+        "n_processed": n_done,
+        "warnings": all_warnings,
         "parts_meta": _parts_meta(parts, s["names"]),
     }
 
@@ -647,6 +876,106 @@ def _validate_fit(fit: Optional[str]) -> str:
             422, f"Fit inválido: {fit!r}. Use um de {list(JOINT_FITS)}."
         )
     return fit
+
+
+_MAX_PINS_PER_CUT = 12
+
+
+def _register_interface(sid: str, s: dict, origin, normal, name_a: str, name_b: str):
+    """
+    Registra uma interface de corte na sessão (§2.3 — 'Add all connectors').
+    Partes são referenciadas por NOME: índices deslocam a cada novo corte.
+    """
+    interfaces = list(s.get("interfaces", []))
+    interfaces.append({
+        "origin": np.asarray(origin, dtype=float).tolist(),
+        "normal": np.asarray(normal, dtype=float).tolist(),
+        "name_a": name_a,
+        "name_b": name_b,
+        "done": False,
+    })
+    sess.update(sid, interfaces=interfaces)
+
+
+def _mark_interface_done(sid: str, s: dict, name_a: str, name_b: str):
+    interfaces = list(s.get("interfaces", []))
+    for itf in interfaces:
+        if not itf["done"] and {itf["name_a"], itf["name_b"]} == {name_a, name_b}:
+            itf["done"] = True
+            break
+    sess.update(sid, interfaces=interfaces)
+
+
+def _pending_interfaces(s: dict) -> list:
+    """Interfaces não processadas cujas partes ainda existem (por nome)."""
+    names = s["names"]
+    result = []
+    for itf in s.get("interfaces", []):
+        if itf["done"]:
+            continue
+        if itf["name_a"] not in names or itf["name_b"] not in names:
+            continue  # parte sumiu e não foi reatribuída — interface obsoleta
+        result.append({
+            **itf,
+            "part_a_idx": names.index(itf["name_a"]),
+            "part_b_idx": names.index(itf["name_b"]),
+        })
+    return result
+
+
+def _reassign_interfaces(sid: str, s: dict, old_name: str,
+                         child_names: list, child_meshes: list):
+    """
+    Uma parte com interface pendente foi recortada: a interface antiga ainda
+    existe fisicamente — migra a referência para o filho mais próximo da
+    origem daquela interface.
+    """
+    interfaces = list(s.get("interfaces", []))
+    changed = False
+    for itf in interfaces:
+        if itf["done"] or old_name not in (itf["name_a"], itf["name_b"]):
+            continue
+        origin = np.array(itf["origin"], dtype=float)[None, :]
+        best_name, best_d = None, float("inf")
+        for name, mesh in zip(child_names, child_meshes):
+            try:
+                d = float(mesh.nearest.on_surface(origin)[1][0])
+            except Exception:
+                d = float(np.linalg.norm(mesh.centroid - origin[0]))
+            if d < best_d:
+                best_name, best_d = name, d
+        key = "name_a" if itf["name_a"] == old_name else "name_b"
+        itf[key] = best_name
+        changed = True
+    if changed:
+        sess.update(sid, interfaces=interfaces)
+
+
+def _pin_overrides_to_specs(pins, cut_normal: np.ndarray, base: JointParams) -> list:
+    """Converte PinOverride[] em specs (origin, direction, JointParams) p/ apply_joint_specs."""
+    if len(pins) > _MAX_PINS_PER_CUT:
+        raise HTTPException(422, f"Máximo de {_MAX_PINS_PER_CUT} conectores por corte.")
+    specs = []
+    for i, po in enumerate(pins):
+        if len(po.position) != 3:
+            raise HTTPException(422, f"Conector {i+1}: position deve ter 3 componentes.")
+        jt = _validate_joint_type(po.joint_type) if po.joint_type else base.joint_type
+        diameter = po.diameter if po.diameter is not None else base.pin_diameter
+        depth = po.depth if po.depth is not None else base.pin_depth
+        if diameter <= 0 or depth <= 0:
+            raise HTTPException(422, f"Conector {i+1}: diâmetro e profundidade devem ser > 0.")
+        if po.direction is not None:
+            direction = np.array(po.direction, dtype=float)
+            if len(po.direction) != 3 or np.linalg.norm(direction) < 1e-9:
+                raise HTTPException(422, f"Conector {i+1}: direção inválida.")
+        else:
+            direction = cut_normal
+        p = JointParams(
+            pin_diameter=diameter, pin_depth=depth,
+            tolerance=base.tolerance, n_pins=1, joint_type=jt,
+        )
+        specs.append((np.array(po.position, dtype=float), direction, p))
+    return specs
 
 
 def _make_names(filename: str, parts: list) -> list:
