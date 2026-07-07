@@ -1425,6 +1425,9 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
     function onKey(e) {
+      // Digitando num input (ex.: renomear peça) — atalhos não podem disparar
+      const tag = e.target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return
       if (e.ctrlKey && e.key === 'z') undoPaint()
       if (e.key === 'f' || e.key === 'F') fitView()
       if (e.key === 'w' || e.key === 'W')

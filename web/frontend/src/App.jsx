@@ -277,7 +277,11 @@ export default function App() {
           sessionId: data.session_id,
           info: data.info,
           parts: data.parts,
-          step: data.step,
+          // O backend não rastreia step nem pintura — vêm do localStorage,
+          // senão a restauração perde as faces pintadas (bug corrigido).
+          step: parsed.step || data.step,
+          paintedFaces: parsed.paintedFaces || [],
+          selectedPart: parsed.selectedPart ?? 0,
         })
       })
       .catch(() => {
