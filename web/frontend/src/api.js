@@ -1,16 +1,41 @@
 const BASE = '/api'
 
+// ── Token de autenticação (JWT do backend) ──────────────────────────────────
+export function getToken() {
+  return localStorage.getItem('zs_token')
+}
+export function setToken(token) {
+  if (token) localStorage.setItem('zs_token', token)
+  else localStorage.removeItem('zs_token')
+}
+
+// Chamado no 401 — o gate do App observa e volta para a tela de login
+let _onUnauthorized = null
+export function onUnauthorized(fn) { _onUnauthorized = fn }
+
 async function req(method, path, body) {
+  const headers = body instanceof FormData ? {} : { 'Content-Type': 'application/json' }
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(BASE + path, {
     method,
-    headers: body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
+    headers,
     body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
+    if (res.status === 401 && _onUnauthorized) _onUnauthorized()
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || 'Erro desconhecido')
+    const e = new Error(err.detail || 'Erro desconhecido')
+    e.status = res.status
+    throw e
   }
   return res.json()
+}
+
+// Links <a href> (downloads) não enviam headers — o backend aceita ?token=
+function tokenQS(prefix = '?') {
+  const token = getToken()
+  return token ? `${prefix}token=${encodeURIComponent(token)}` : ''
 }
 
 export const api = {
@@ -24,7 +49,9 @@ export const api = {
     req('GET', `/mesh/${sessionId}/${partIdx}`),
 
   getMeshBin: async (sessionId, partIdx) => {
-    const res = await fetch(`${BASE}/mesh-bin/${sessionId}/${partIdx}`)
+    const token = getToken()
+    const res = await fetch(`${BASE}/mesh-bin/${sessionId}/${partIdx}`,
+      token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
     if (!res.ok) throw new Error('Erro ao carregar mesh binária')
     return res.arrayBuffer()
   },
@@ -80,12 +107,16 @@ export const api = {
 
   exportUrl: (sessionId, partIdx, fmt, name) =>
     `${BASE}/export/${sessionId}/${partIdx}/${fmt}` +
-    (name ? `?name=${encodeURIComponent(name)}` : ''),
+    (name ? `?name=${encodeURIComponent(name)}` : '') +
+    tokenQS(name ? '&' : '?'),
 
   // names: { [partIdx]: "nome_editado" } — backend usa nos nomes internos do ZIP
-  exportZipUrl: (sessionId, fmt, names) =>
-    `${BASE}/export-zip/${sessionId}/${fmt}` +
-    (names && Object.keys(names).length ? `?names=${encodeURIComponent(JSON.stringify(names))}` : ''),
+  exportZipUrl: (sessionId, fmt, names) => {
+    const hasNames = names && Object.keys(names).length
+    return `${BASE}/export-zip/${sessionId}/${fmt}` +
+      (hasNames ? `?names=${encodeURIComponent(JSON.stringify(names))}` : '') +
+      tokenQS(hasNames ? '&' : '?')
+  },
 
   checkSession: (sessionId) =>
     req('GET', `/session/${sessionId}`),
@@ -105,4 +136,26 @@ export const api = {
 
   cutByMultiMask: (sessionId, partIdx, labels) =>
     req('POST', '/cut-by-multi-mask', { session_id: sessionId, part_idx: partIdx, labels }),
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  register: (email, password, name) =>
+    req('POST', '/auth/register', { email, password, name }),
+
+  login: (email, password) =>
+    req('POST', '/auth/login', { email, password }),
+
+  authMe: () => req('GET', '/auth/me'),
+
+  // ── Billing ───────────────────────────────────────────────────────────────
+  billingPlans: () => req('GET', '/billing/plans'),
+
+  billingMe: () => req('GET', '/billing/me'),
+
+  billingCheckout: (plano, periodo, paymentMethod) =>
+    req('POST', '/billing/checkout', { plano, periodo, payment_method: paymentMethod }),
+
+  billingCancel: () => req('POST', '/billing/cancel'),
+
+  billingChangePlan: (plano, periodo) =>
+    req('POST', '/billing/change-plan', { plano, periodo }),
 }

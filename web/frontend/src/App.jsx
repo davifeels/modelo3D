@@ -7,6 +7,12 @@ import DropZone, { uploadModelFile } from './components/DropZone.jsx'
 import SidePanel from './components/SidePanel.jsx'
 import RightPanel from './components/RightPanel.jsx'
 import Viewer3D from './components/Viewer3D.jsx'
+import PlansPage from './components/PlansPage.jsx'
+import CheckoutPage from './components/CheckoutPage.jsx'
+import LoginPage from './components/LoginPage.jsx'
+import AccountPage from './components/AccountPage.jsx'
+import { usePathRoute, navigate } from './router.js'
+import { onUnauthorized } from './api.js'
 import './styles/globals.css'
 
 function SunIcon() {
@@ -240,7 +246,51 @@ function RestoreModal() {
   )
 }
 
+// Splash mínimo enquanto o boot valida o token salvo (evita flash de login)
+function BootSplash() {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#0D0F14',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="spinner" />
+    </div>
+  )
+}
+
+// Gate de acesso: login → (sem plano ativo) → paywall de planos → app.
+// Mantido como wrapper para não misturar hooks de rota com os hooks do app.
 export default function App() {
+  const path = usePathRoute()
+  const { authToken, billingMe, authChecked } = useStore()
+
+  // Boot: 401 global derruba a sessão; token salvo é validado e o billing carregado
+  useEffect(() => {
+    onUnauthorized(() => useStore.getState().logout())
+  }, [])
+  useEffect(() => {
+    if (!authToken) {
+      useStore.setState({ authChecked: true })
+      return
+    }
+    Promise.all([api.authMe(), api.billingMe()])
+      .then(([me, billing]) =>
+        useStore.setState({ authUser: me.user, billingMe: billing, authChecked: true }))
+      .catch((e) => {
+        if (e?.status === 401) useStore.getState().logout()
+        useStore.setState({ authChecked: true })
+      })
+  }, [authToken])
+
+  if (!authChecked) return <BootSplash />
+  if (!authToken) return <LoginPage />
+  if (path.startsWith('/planos')) return <PlansPage />
+  if (path.startsWith('/checkout')) return <CheckoutPage />
+  if (path.startsWith('/conta')) return <AccountPage />
+  // Regra de negócio: o app só abre com plano ativo (trial conta) — paywall
+  if (billingMe && !billingMe.has_access) return <PlansPage paywall />
+  return <MainApp />
+}
+
+function MainApp() {
   const viewerRef = useRef()
   const fileInputRef = useRef()
   const { lang, setLang: storeLang, theme, setTheme, setRestorePrompt, step } = useStore()
@@ -327,6 +377,13 @@ export default function App() {
             style={{ display: 'none' }}
             onChange={handleOpenFile}
           />
+          <button className="btn-header" onClick={() => navigate('/conta')} title={t('header_account')} data-testid="header-account">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <circle cx="7" cy="4.6" r="2.6" stroke="currentColor" strokeWidth="1.2"/>
+              <path d="M1.8 12.4a5.4 5.4 0 0 1 10.4 0" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+            </svg>
+            <span>{t('header_account')}</span>
+          </button>
           <button className="theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? t('theme_light') : t('theme_dark')}>
             {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
           </button>

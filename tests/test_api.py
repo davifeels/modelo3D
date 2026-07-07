@@ -10,6 +10,8 @@ import numpy as np
 import trimesh
 import pytest
 
+import apiauth
+
 BASE = "http://localhost:8000/api"
 
 
@@ -17,6 +19,7 @@ def _req(method, path, body=None, raw=False):
     url = BASE + path
     data = json.dumps(body).encode() if body else None
     hdrs = {"Content-Type": "application/json"} if data else {}
+    hdrs.update(apiauth.auth_headers())
     rq = urllib.request.Request(url, data=data, method=method, headers=hdrs)
     try:
         resp = urllib.request.urlopen(rq, timeout=90)
@@ -44,7 +47,7 @@ def _upload_mesh(mesh) -> str:
     body = b"--b\r\n" + bd + b"\r\n" + ct + b"\r\n\r\n" + stl + b"\r\n--b--\r\n"
     rq = urllib.request.Request(
         BASE + "/upload", data=body,
-        headers={"Content-Type": "multipart/form-data; boundary=b"}
+        headers={"Content-Type": "multipart/form-data; boundary=b", **apiauth.auth_headers()}
     )
     resp = json.loads(urllib.request.urlopen(rq, timeout=60).read())
     return resp["session_id"]
@@ -85,7 +88,7 @@ class TestUpload:
         body = b"--b\r\n" + bd + b"\r\n" + ct + b"\r\n\r\n" + stl + b"\r\n--b--\r\n"
         rq = urllib.request.Request(
             BASE + "/upload", data=body,
-            headers={"Content-Type": "multipart/form-data; boundary=b"}
+            headers={"Content-Type": "multipart/form-data; boundary=b", **apiauth.auth_headers()}
         )
         resp = json.loads(urllib.request.urlopen(rq, timeout=60).read())
         assert "info" in resp
@@ -98,7 +101,7 @@ class TestUpload:
         body = b"--b\r\n" + bd + b"\r\n" + ct + b"\r\n\r\n" + data + b"\r\n--b--\r\n"
         rq = urllib.request.Request(
             BASE + "/upload", data=body,
-            headers={"Content-Type": "multipart/form-data; boundary=b"}
+            headers={"Content-Type": "multipart/form-data; boundary=b", **apiauth.auth_headers()}
         )
         try:
             urllib.request.urlopen(rq, timeout=10)
@@ -113,7 +116,7 @@ class TestUpload:
         body = b"--b\r\n" + bd + b"\r\n" + ct + b"\r\n\r\n" + data + b"\r\n--b--\r\n"
         rq = urllib.request.Request(
             BASE + "/upload", data=body,
-            headers={"Content-Type": "multipart/form-data; boundary=b"}
+            headers={"Content-Type": "multipart/form-data; boundary=b", **apiauth.auth_headers()}
         )
         try:
             urllib.request.urlopen(rq, timeout=10)

@@ -1,4 +1,19 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: zefiro
+      POSTGRES_PASSWORD: zefiro
+      POSTGRES_DB: zefiro
+    volumes:
+      - zefiro-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zefiro -d zefiro"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -6,6 +21,22 @@ services:
     image: zefirosplit-backend
     ports:
       - "8000:8000"          # mesmo endereço usado pela suíte de testes de API
+    environment:
+      DATABASE_URL: postgresql+psycopg2://zefiro:zefiro@db:5432/zefiro
+      JWT_SECRET: troque-este-segredo-em-producao
+      # Sem gateway de pagamento ainda: /dev/* liberado para simular ativação.
+      # Ao plugar o gateway real: PAYMENT_GATEWAY=stripe, remover ZS_DEV_BILLING
+      # e definir WEBHOOK_SECRET com o segredo do provedor.
+      ZS_DEV_BILLING: "1"
+      WEBHOOK_SECRET: test-secret   # valor que tests/test_billing.py usa; trocar em produção
+      BILLING_ENFORCE: "1"
+      # Conta do dono, criada/atualizada no startup com Pro ativo (bootstrap.py).
+      # Trocar ADMIN_PASSWORD e reiniciar redefine a senha.
+      ADMIN_EMAIL: davifeels23@gmail.com
+      ADMIN_PASSWORD: ZefiroAdmin!f50077e3
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
@@ -18,3 +49,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  zefiro-db:

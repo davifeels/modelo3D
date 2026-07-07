@@ -1,7 +1,29 @@
 import { create } from 'zustand'
+import { getToken, setToken } from './api.js'
 
 // step: idle | loaded | cutting | painting | previewing | processing | result
 export const useStore = create((set, get) => ({
+  // ── Auth / billing ──────────────────────────────────────────
+  authToken: getToken(),      // JWT persistido no localStorage
+  authUser: null,             // { id, email, name } — carregado no boot
+  billingMe: null,            // resposta de GET /api/billing/me
+  authChecked: false,         // boot terminou (evita flash da tela de login)
+
+  setAuth: (token, user) => {
+    setToken(token)
+    set({ authToken: token, authUser: user })
+  },
+
+  setBillingMe: (billingMe) => set({ billingMe }),
+  setAuthChecked: (authChecked) => set({ authChecked }),
+
+  logout: () => {
+    setToken(null)
+    try { localStorage.removeItem('zs_session') } catch (_) {}
+    set({ authToken: null, authUser: null, billingMe: null })
+    get().reset()
+  },
+
   // Session
   sessionId: null,
 

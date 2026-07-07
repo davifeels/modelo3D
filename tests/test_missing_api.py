@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 import trimesh
 
+import apiauth
+
 BASE = "http://localhost:8000/api"
 
 
@@ -21,6 +23,7 @@ def _req(method, path, body=None, raw=False):
     url = BASE + path
     data = json.dumps(body).encode() if body else None
     hdrs = {"Content-Type": "application/json"} if data else {}
+    hdrs.update(apiauth.auth_headers())
     rq = urllib.request.Request(url, data=data, method=method, headers=hdrs)
     try:
         resp = urllib.request.urlopen(rq, timeout=90)
@@ -43,7 +46,7 @@ def _upload_raw(data: bytes, filename: str) -> dict:
     body = b"--b\r\n" + bd + b"\r\n" + ct + b"\r\n\r\n" + data + b"\r\n--b--\r\n"
     rq = urllib.request.Request(
         BASE + "/upload", data=body,
-        headers={"Content-Type": "multipart/form-data; boundary=b"}
+        headers={"Content-Type": "multipart/form-data; boundary=b", **apiauth.auth_headers()}
     )
     resp = urllib.request.urlopen(rq, timeout=60)
     return json.loads(resp.read())
@@ -285,7 +288,7 @@ class TestMalformedBody:
     def _post_raw(self, path: str, body_bytes: bytes, content_type="application/json"):
         rq = urllib.request.Request(
             BASE + path, data=body_bytes,
-            headers={"Content-Type": content_type},
+            headers={"Content-Type": content_type, **apiauth.auth_headers()},
             method="POST",
         )
         try:

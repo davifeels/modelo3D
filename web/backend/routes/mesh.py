@@ -5,12 +5,17 @@ import io
 import concurrent.futures
 import numpy as np
 import trimesh
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional, List
+from sqlalchemy.orm import Session
 
 import session as sess
+import quota
+from db import get_db
+from models import User
+from routes.auth import get_current_user
 from src.importer import load_mesh, HEAVY_MESH_THRESHOLD
 
 # Executor persistente — CRÍTICO: sem referência persistente o GC destrói o executor
@@ -421,13 +426,15 @@ def region_grow(req: RegionGrowReq):
 # ── Corte a partir de faces pintadas (pincel livre) ───────────────────────────
 
 @router.post("/cut-from-painted")
-def cut_from_painted(req: PaintedCutReq):
+def cut_from_painted(req: PaintedCutReq, user: User = Depends(get_current_user),
+                     db: Session = Depends(get_db)):
     """
     Separa a malha pela máscara de faces pintadas — SEM plano de corte.
     Parte B (vermelha, cavidades) = exatamente as faces pintadas;
     Parte A (azul, pinos) = todas as demais.
     cut_origin/cut_normal retornados são metadados da interface (encaixes).
     """
+    quota.ensure_slice_allowed(db, user.id, req.session_id)
     s = _get_session(req.session_id)
     _check_idx(req.part_idx, s["parts"])
     mesh = s["parts"][req.part_idx]
@@ -465,6 +472,7 @@ def cut_from_painted(req: PaintedCutReq):
     _reassign_interfaces(req.session_id, s, base_name,
                          [name_base, name_painted], [part_base, part_painted])
     _register_interface(req.session_id, s, origin, -normal, name_base, name_painted)
+    quota.record_slice(db, user.id, req.session_id)
 
     total = len(part_painted.faces) + len(part_base.faces)
     return {
@@ -566,11 +574,13 @@ def mask_split(req: MaskSplitReq):
 
 
 @router.post("/cut-by-multi-mask")
-def cut_by_multi_mask_route(req: MultiMaskCutReq):
+def cut_by_multi_mask_route(req: MultiMaskCutReq, user: User = Depends(get_current_user),
+                            db: Session = Depends(get_db)):
     """
     Aplica a máscara: divide a parte em N peças fechadas e registra a
     interface de cada par adjacente (prontas para 'Add all connectors').
     """
+    quota.ensure_slice_allowed(db, user.id, req.session_id)
     s = _get_session(req.session_id)
     _check_idx(req.part_idx, s["parts"])
     mesh = s["parts"][req.part_idx]
@@ -602,6 +612,7 @@ def cut_by_multi_mask_route(req: MultiMaskCutReq):
             req.session_id, s, itf["origin"], itf["normal"],
             name_by_region[itf["region_a"]], name_by_region[itf["region_b"]],
         )
+    quota.record_slice(db, user.id, req.session_id)
 
     return {
         "n_regions": len(new_parts),
@@ -613,7 +624,9 @@ def cut_by_multi_mask_route(req: MultiMaskCutReq):
 # ── Corte manual por plano ────────────────────────────────────────────────────
 
 @router.post("/cut")
-def cut(req: CutReq):
+def cut(req: CutReq, user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)):
+    quota.ensure_slice_allowed(db, user.id, req.session_id)
     s = _get_session(req.session_id)
     _check_idx(req.part_idx, s["parts"])
     mesh = s["parts"][req.part_idx]
@@ -640,6 +653,7 @@ def cut(req: CutReq):
     sess.update(req.session_id, parts=parts, names=names)
     _reassign_interfaces(req.session_id, s, base_name, [na, nb], [part_a, part_b])
     _register_interface(req.session_id, s, origin, normal, na, nb)
+    quota.record_slice(db, user.id, req.session_id)
 
     return {
         "cut_origin": origin.tolist(),

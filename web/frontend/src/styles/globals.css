@@ -6,29 +6,30 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* ── Surfaces dark (default) */
-  --e0: #06060f;
-  --e1: #09091a;
-  --e2: #0d0d22;
-  --e3: #111130;
-  --e4: #161640;
-  --e5: #1c1c50;
+  /* ── Surfaces dark (default) — mesma identidade da página de planos (#0D0F14) */
+  --e0: #0a0c10;
+  --e1: #0D0F14;
+  --e2: #12151d;
+  --e3: #171b25;
+  --e4: #1c212c;
+  --e5: #232936;
 
   /* ── Borders dark */
   --b1: #ffffff08;
-  --b2: #ffffff10;
-  --b3: #ffffff18;
+  --b2: #ffffff12;
+  --b3: #ffffff1c;
 
-  /* ── Purple spectrum (shared) */
-  --p0: #2e1065;
-  --p1: #4c1d95;
-  --p2: #6d28d9;
-  --p3: #7c3aed;
-  --p4: #8b5cf6;
-  --p5: #a78bfa;
-  --p6: #c4b5fd;
-  --p-glow: #7c3aed40;
-  --p-glow2: #7c3aed18;
+  /* ── Accent spectrum (verde ZefiroSplit — compartilhado com /planos) */
+  --p0: #00men3d2e;
+  --p0: #003d2e;
+  --p1: #00553f;
+  --p2: #008765;
+  --p3: #00a67c;
+  --p4: #00C896;
+  --p5: #3ce8bb;
+  --p6: #8ff2d6;
+  --p-glow: #00c89640;
+  --p-glow2: #00c89618;
 
   /* ── Semantic */
   --success: #10b981;
@@ -38,10 +39,10 @@
   --painted: #f97316;
 
   /* ── Text dark */
-  --t1: #f0f0ff;
-  --t2: #8888bb;
-  --t3: #44446688;
-  --t4: #33334455;
+  --t1: #eef1f6;
+  --t2: #9aa3b2;
+  --t3: #5d667588;
+  --t4: #3c434e55;
 
   /* ── Shape */
   --r1: 6px;

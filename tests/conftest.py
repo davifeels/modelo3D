@@ -8,6 +8,38 @@ import trimesh
 import numpy as np
 
 
+# ── Playwright (E2E) ───────────────────────────────────────────────────────────
+# Um ÚNICO sync_playwright por sessão pytest: dois contextos sync na mesma
+# thread são proibidos pelo Playwright ("Sync API inside the asyncio loop"),
+# então os arquivos E2E não podem ter cada um o seu fixture `browser`.
+
+def _e2e_up(url):
+    import urllib.request, urllib.error
+    try:
+        urllib.request.urlopen(url, timeout=3)
+    except urllib.error.HTTPError:
+        pass  # 4xx/5xx = servidor respondeu
+    except Exception:
+        return False
+    return True
+
+
+@pytest.fixture(scope="session")
+def browser():
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright não instalado")
+    if not _e2e_up("http://localhost:5173"):
+        pytest.skip("Frontend não está rodando em http://localhost:5173")
+    if not _e2e_up("http://localhost:8000/health"):
+        pytest.skip("Backend não está rodando em http://localhost:8000")
+    with sync_playwright() as p:
+        b = p.chromium.launch(headless=True)
+        yield b
+        b.close()
+
+
 # ── Geometrias reutilizáveis ───────────────────────────────────────────────────
 
 @pytest.fixture

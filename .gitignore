@@ -16,3 +16,6 @@ node_modules/
 .pytest_cache/
 # Fixtures dos testes E2E são versionadas (exceção ao *.stl acima)
 !tests/fixtures/*.stl
+
+# Banco SQLite local (dev sem Docker)
+web/backend/zefiro.db

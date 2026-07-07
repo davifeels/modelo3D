@@ -26,44 +26,16 @@ SPHERE_1M_STL = os.path.join(os.path.dirname(__file__), "fixtures", "sphere.stl"
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
-
-def _check_frontend():
-    import urllib.request, urllib.error
-    try:
-        urllib.request.urlopen(BASE_URL, timeout=3)
-    except urllib.error.HTTPError:
-        pass
-    except Exception:
-        pytest.skip("Frontend não está rodando em http://localhost:5173")
-
-
-def _check_backend():
-    import urllib.request, urllib.error
-    try:
-        urllib.request.urlopen("http://localhost:8000/api/session/ping", timeout=3)
-    except urllib.error.HTTPError:
-        pass
-    except Exception:
-        pytest.skip("Backend não está rodando em http://localhost:8000")
-
-
-@pytest.fixture(scope="session")
-def browser():
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        pytest.skip("playwright não instalado")
-    _check_frontend()
-    _check_backend()
-    with sync_playwright() as p:
-        b = p.chromium.launch(headless=True)
-        yield b
-        b.close()
-
+# `browser` (session-scoped, único por sessão pytest) vem de tests/conftest.py.
 
 @pytest.fixture
 def page(browser):
+    # Todo o app exige login: registra um usuário de teste (trial Pro de 7 dias,
+    # fatiamento ilimitado) e injeta o token antes de carregar a página.
+    import apiauth
+    token = apiauth.get_token()
     ctx = browser.new_context()
+    ctx.add_init_script(f"localStorage.setItem('zs_token', '{token}')")
     pg = ctx.new_page()
     pg.goto(BASE_URL, wait_until="networkidle")
     yield pg
