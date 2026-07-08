@@ -212,10 +212,13 @@ class TestWebhook:
 
 
 class TestCancelamento:
-    def test_cancelar_trial_encerra_acesso(self):
-        token, _, _ = apiauth.register_user()
+    def test_cancelar_anual_recem_comprado_reembolsa_e_encerra(self):
+        """Compra anual cancelada no início: reembolso proporcional e acesso
+        encerrado na hora (não existe mais trial — conta nasce da compra)."""
+        token, _, _ = apiauth.register_user(plano="pro", periodo="anual")
         resp, code = _req("POST", "/billing/cancel", {}, headers=_hdrs(token))
         assert code == 200
+        assert resp["refund_cents"] > 40000  # ~integral (comprado agora mesmo)
         me, _ = _req("GET", "/billing/me", headers=_hdrs(token))
         assert me["has_access"] is False
         assert me["read_only_until"] is not None  # 30 dias de leitura

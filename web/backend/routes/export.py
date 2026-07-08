@@ -6,10 +6,12 @@ import json
 import zipfile
 from typing import Optional
 from urllib.parse import quote
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
 import session as sess
+from models import User
+from routes.auth import get_current_user
 
 router = APIRouter(prefix="/api")
 
@@ -31,12 +33,13 @@ def _content_disposition(filename: str) -> str:
 
 
 @router.get("/export/{session_id}/{part_idx}/{fmt}")
-def export_part(session_id: str, part_idx: int, fmt: str, name: Optional[str] = None):
+def export_part(session_id: str, part_idx: int, fmt: str, name: Optional[str] = None,
+                user: User = Depends(get_current_user)):
     fmt = fmt.lower().lstrip(".")
     if fmt not in FORMATS:
         raise HTTPException(400, f"Formato inválido: {fmt}. Use stl ou obj.")
 
-    s = _get(session_id)
+    s = _get(session_id, user)
     if part_idx < 0 or part_idx >= len(s["parts"]):
         raise HTTPException(422, "Índice inválido.")
 
@@ -58,12 +61,13 @@ def export_part(session_id: str, part_idx: int, fmt: str, name: Optional[str] = 
 
 
 @router.get("/export-zip/{session_id}/{fmt}")
-def export_zip(session_id: str, fmt: str, names: Optional[str] = None):
+def export_zip(session_id: str, fmt: str, names: Optional[str] = None,
+               user: User = Depends(get_current_user)):
     fmt = fmt.lower().lstrip(".")
     if fmt not in FORMATS:
         raise HTTPException(400, f"Formato inválido: {fmt}. Use stl ou obj.")
 
-    s = _get(session_id)
+    s = _get(session_id, user)
     if not s["parts"]:
         raise HTTPException(422, "Nenhuma parte para exportar.")
 
@@ -99,7 +103,10 @@ def export_zip(session_id: str, fmt: str, names: Optional[str] = None):
     )
 
 
-def _get(sid: str) -> dict:
+def _get(sid: str, user: User) -> dict:
+    # 404 (não 403) quando a sessão é de outro usuário — não revela existência
+    if not sess.owned_by(sid, user.id):
+        raise HTTPException(404, "Sessão não encontrada ou expirada.")
     s = sess.get(sid)
     if not s:
         raise HTTPException(404, "Sessão não encontrada ou expirada.")

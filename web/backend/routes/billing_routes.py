@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import billing
+import subscriptions
 from db import get_db
 from gateway import GatewayNotConfigured, WebhookInvalid, get_gateway
 from models import SliceUsage, Subscription, User, WebhookEvent
@@ -61,27 +62,8 @@ def _sub_payload(db: Session, user: User) -> dict:
     }
 
 
-def _activate(db: Session, user_id: str, plan: str, periodo: str,
-              gateway_customer_id: str | None = None,
-              gateway_subscription_id: str | None = None):
-    """Ativa/renova a assinatura no banco (chamado pelo webhook e pelo /dev/activate)."""
-    now = datetime.utcnow()
-    sub = _get_sub(db, user_id)
-    if sub is None:
-        sub = Subscription(user_id=user_id, plan=plan)
-        db.add(sub)
-    sub.plan = plan
-    sub.periodo = periodo
-    sub.status = "active"
-    sub.trial_end = None
-    sub.current_period_start = now
-    sub.current_period_end = billing.period_end(now, periodo)
-    sub.canceled_at = None
-    sub.read_only_until = None
-    if gateway_customer_id:
-        sub.gateway_customer_id = gateway_customer_id
-    if gateway_subscription_id:
-        sub.gateway_subscription_id = gateway_subscription_id
+# Ativação/renovação vive em subscriptions.activate (compartilhada com a compra)
+_activate = subscriptions.activate
 
 
 # ── Catálogo (público) ────────────────────────────────────────────────────────

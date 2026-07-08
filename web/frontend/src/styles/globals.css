@@ -154,17 +154,11 @@ html, body, #root {
 
 .header-logo {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
   flex-shrink: 0;
 }
 
-.logo-sub {
-  font-size: 9px;
-  font-weight: 500;
-  color: var(--t3);
-  letter-spacing: .4px;
-}
+/* .site-logo substituído pelo componente LogoMark */
 
 .header-actions {
   display: flex;

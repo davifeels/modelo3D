@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Stack ISOLADO de testes — banco EFÊMERO (tmpfs, em RAM). Nada aqui persiste:
+# ao derrubar o stack, todos os usuários/compras criados pela suíte somem.
+# O banco de dev/produção (volume zefiro-db) NUNCA é tocado por esta stack.
+#
+# Projeto próprio (name: zefiro-test) → containers/rede/volumes separados do dev.
+# Usa as MESMAS portas 8000/5173 que a suíte espera, então é mutuamente
+# exclusivo com o stack de dev (pare o dev antes: `docker compose down`).
+#
+# Uso prático: ./scripts/test.sh  (sobe, roda pytest, derruba tudo).
+# ─────────────────────────────────────────────────────────────────────────────
+name: zefiro-test
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: zefiro
+      POSTGRES_PASSWORD: zefiro
+      POSTGRES_DB: zefiro
+    tmpfs:
+      - /var/lib/postgresql/data   # RAM: efêmero e rápido, zero persistência
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zefiro -d zefiro"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: web/backend/Dockerfile
+    image: zefirosplit-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://zefiro:zefiro@db:5432/zefiro
+      # Segredos FIXOS de teste (não vêm do .env) — o WEBHOOK_SECRET precisa ser
+      # 'test-secret' porque tests/test_billing.py assina os webhooks com ele.
+      JWT_SECRET: test-jwt-secret
+      WEBHOOK_SECRET: test-secret
+      ZS_DEV_BILLING: "1"          # dev_credentials + /dev/* + rate-limit ×100
+      ZS_ENABLE_DOCS: "1"
+      PAYMENT_GATEWAY: "none"      # compra simulada (a suíte não usa gateway real)
+      BILLING_ENFORCE: "1"
+      ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      APP_URL: http://localhost:5173
+      # Devem bater com ADMIN_EMAIL/ADMIN_PASSWORD exportados no pytest
+      ADMIN_EMAIL: davifeels23@gmail.com
+      ADMIN_PASSWORD: ZefiroAdmin!f50077e3
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: web/frontend/Dockerfile
+    image: zefirosplit-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend

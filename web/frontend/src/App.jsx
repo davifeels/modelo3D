@@ -8,12 +8,16 @@ import SidePanel from './components/SidePanel.jsx'
 import RightPanel from './components/RightPanel.jsx'
 import Viewer3D from './components/Viewer3D.jsx'
 import PlansPage from './components/PlansPage.jsx'
-import CheckoutPage from './components/CheckoutPage.jsx'
+import LandingPage from './components/LandingPage.jsx'
+import PurchasePage from './components/PurchasePage.jsx'
+import AdminPage from './components/AdminPage.jsx'
 import LoginPage from './components/LoginPage.jsx'
+import ResetPasswordPage from './components/ResetPasswordPage.jsx'
 import AccountPage from './components/AccountPage.jsx'
 import { usePathRoute, navigate } from './router.js'
 import { onUnauthorized } from './api.js'
 import './styles/globals.css'
+import LogoMark from './components/LogoMark.jsx'
 
 function SunIcon() {
   return (
@@ -256,10 +260,25 @@ function BootSplash() {
   )
 }
 
-// Gate de acesso: login → (sem plano ativo) → paywall de planos → app.
+// Em produção cada ÁREA tem seu subdomínio (a mesma SPA decide pela URL):
+//   seudominio.com / www  → site público (landing, compra)
+//   app.seudominio.com     → app do cliente (login, fatiador, conta)
+//   admin.seudominio.com   → painel administrativo
+// Em localhost (sem subdomínio) tudo funciona por caminho, como antes.
+function hostArea() {
+  const h = (typeof window !== 'undefined' ? window.location.hostname : '')
+  if (h.startsWith('admin.')) return 'admin'
+  if (h.startsWith('app.')) return 'app'
+  return 'site'
+}
+
+// Gate de acesso (fluxo da refatoração):
+//   visitante → Landing (/) → Comprar (/comprar) → Login (/login) → app
+//   /admin tem autenticação própria (separada dos clientes)
 // Mantido como wrapper para não misturar hooks de rota com os hooks do app.
 export default function App() {
   const path = usePathRoute()
+  const area = hostArea()
   const { authToken, billingMe, authChecked } = useStore()
 
   // Boot: 401 global derruba a sessão; token salvo é validado e o billing carregado
@@ -280,12 +299,34 @@ export default function App() {
       })
   }, [authToken])
 
+  // Logado em /login → volta para o app (efeito: navigate fora do render)
+  const loggedOnLogin = authChecked && authToken && path.startsWith('/login')
+  useEffect(() => {
+    if (loggedOnLogin) navigate('/')
+  }, [loggedOnLogin])
+
+  // Subdomínio admin.* → só o painel administrativo (auth própria)
+  if (area === 'admin') return <AdminPage />
+
+  // Rotas públicas (não dependem do boot de autenticação de cliente)
+  if (path.startsWith('/admin')) return <AdminPage />
+  if (path.startsWith('/comprar')) return <PurchasePage />
+  // Link do e-mail de "esqueci a senha" — público, mesmo com sessão antiga
+  if (path.startsWith('/reset-password')) return <ResetPasswordPage />
+  // /landing: mesma landing da raiz, mas acessível também LOGADO (preview/anúncio)
+  if (path.startsWith('/landing')) return <LandingPage />
+
   if (!authChecked) return <BootSplash />
-  if (!authToken) return <LoginPage />
+  if (!authToken) {
+    if (path.startsWith('/login')) return <LoginPage />
+    // Raiz: no subdomínio do app é o login; no site público é a landing
+    if (path === '/' || path === '') return area === 'app' ? <LoginPage /> : <LandingPage />
+    return <LoginPage />  // rota protegida sem sessão → login
+  }
+  if (loggedOnLogin) return <BootSplash />
   if (path.startsWith('/planos')) return <PlansPage />
-  if (path.startsWith('/checkout')) return <CheckoutPage />
   if (path.startsWith('/conta')) return <AccountPage />
-  // Regra de negócio: o app só abre com plano ativo (trial conta) — paywall
+  // Regra de negócio: o app só abre com assinatura ativa — paywall
   if (billingMe && !billingMe.has_access) return <PlansPage paywall />
   return <MainApp />
 }
@@ -354,8 +395,7 @@ function MainApp() {
       {/* Header */}
       <header className="app-header">
         <div className="header-logo">
-          <span className="logo">ZefiroSplit</span>
-          <span className="logo-sub">3D Mesh Splitter</span>
+          <LogoMark size="sm" />
         </div>
         <StepIndicator />
         <div className="header-actions">

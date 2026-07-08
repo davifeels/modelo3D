@@ -137,14 +137,23 @@ export const api = {
   cutByMultiMask: (sessionId, partIdx, labels) =>
     req('POST', '/cut-by-multi-mask', { session_id: sessionId, part_idx: partIdx, labels }),
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  register: (email, password, name) =>
-    req('POST', '/auth/register', { email, password, name }),
-
+  // ── Auth (NÃO existe registro: conta nasce da compra) ────────────────────
   login: (email, password) =>
     req('POST', '/auth/login', { email, password }),
 
+  forgotPassword: (email) =>
+    req('POST', '/auth/forgot-password', { email }),
+
+  resetPassword: (token, password) =>
+    req('POST', '/auth/reset-password', { token, password }),
+
   authMe: () => req('GET', '/auth/me'),
+
+  // ── Compra de acesso (público) ────────────────────────────────────────────
+  purchaseProducts: () => req('GET', '/purchase/products'),
+
+  purchase: ({ nome, email, telefone, plano, periodo }) =>
+    req('POST', '/purchase', { nome, email, telefone, plano, periodo }),
 
   // ── Billing ───────────────────────────────────────────────────────────────
   billingPlans: () => req('GET', '/billing/plans'),
@@ -158,4 +167,46 @@ export const api = {
 
   billingChangePlan: (plano, periodo) =>
     req('POST', '/billing/change-plan', { plano, periodo }),
+}
+
+// ── Painel administrativo (token PRÓPRIO, separado do cliente) ──────────────
+
+export function getAdminToken() {
+  return localStorage.getItem('zs_admin_token')
+}
+export function setAdminToken(token) {
+  if (token) localStorage.setItem('zs_admin_token', token)
+  else localStorage.removeItem('zs_admin_token')
+}
+
+async function adminReq(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' }
+  const token = getAdminToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(BASE + '/admin' + path, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    const e = new Error(err.detail || 'Erro desconhecido')
+    e.status = res.status
+    throw e
+  }
+  return res.json()
+}
+
+export const adminApi = {
+  login: (email, password) => adminReq('POST', '/login', { email, password }),
+  me: () => adminReq('GET', '/me'),
+  users: (q, field) => adminReq('GET',
+    `/users?${q ? `q=${encodeURIComponent(q)}&` : ''}${field ? `field=${field}` : ''}`),
+  createUser: (data) => adminReq('POST', '/users', data),
+  history: (userId) => adminReq('GET', `/users/${userId}/history`),
+  setPassword: (userId, password) =>
+    adminReq('POST', `/users/${userId}/password`, password ? { password } : {}),
+  sendAccess: (userId) => adminReq('POST', `/users/${userId}/send-access`),
+  setStatus: (userId, status) => adminReq('POST', `/users/${userId}/status`, { status }),
+  logs: () => adminReq('GET', '/logs'),
 }

@@ -26,10 +26,11 @@ def _cleanup():
 threading.Thread(target=_cleanup, daemon=True).start()
 
 
-def create() -> str:
+def create(owner: Optional[str] = None) -> str:
     sid = str(uuid.uuid4())
     with _lock:
         _store[sid] = {
+            "owner": owner,     # user.id dono da sessão (isolamento entre contas)
             "parts": [],
             "names": [],
             "info": {},
@@ -47,6 +48,17 @@ def get(sid: str) -> Optional[dict]:
         if s:
             s["last_access"] = time.time()
         return s
+
+
+def owned_by(sid: str, user_id: str) -> bool:
+    """False se a sessão existe e pertence a OUTRO usuário. Sessões sem dono
+    (legado) passam — o vínculo é defesa em profundidade sobre o UUID."""
+    with _lock:
+        s = _store.get(sid)
+        if not s:
+            return True  # inexistência é tratada como 404 pelos handlers
+        owner = s.get("owner")
+        return owner is None or owner == user_id
 
 
 def update(sid: str, **kwargs):

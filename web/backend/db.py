@@ -29,6 +29,8 @@ def get_db():
 
 
 def init_db():
-    """Cria as tabelas que ainda não existem. Chamado no startup do app."""
+    """Cria tabelas novas e aplica migrações leves. Chamado no startup do app."""
     import models  # noqa: F401 — registra os modelos no metadata
     Base.metadata.create_all(bind=engine)
+    from migrations import run_migrations
+    run_migrations(engine)

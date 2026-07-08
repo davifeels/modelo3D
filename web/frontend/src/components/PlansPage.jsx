@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useStore } from '../store.js'
+import LogoMark from './LogoMark.jsx'
 import { t, tf, setLang } from '../i18n.js'
 import { navigate } from '../router.js'
-import { PLANS, FEATURES, CARD_FEATURES, FAQ_KEYS, fmtBRL, checkoutUrl } from '../plans.js'
+import { PLANS, FEATURES, CARD_FEATURES, FAQ_KEYS, fmtBRL, buyUrl } from '../plans.js'
 import '../styles/plans.css'
 
 function CheckIcon() {
@@ -50,7 +51,7 @@ function PlanCard({ plan, periodo }) {
 
   function goCheckout(e) {
     e.preventDefault()
-    navigate(checkoutUrl(plan.id, periodo))
+    navigate(buyUrl(plan.id, periodo))  // compra acontece fora do app (/comprar)
   }
 
   return (
@@ -70,11 +71,11 @@ function PlanCard({ plan, periodo }) {
           : null}
       </div>
 
-      <a className="pl-cta" href={checkoutUrl(plan.id, periodo)} onClick={goCheckout}
+      <a className="pl-cta" href={buyUrl(plan.id, periodo)} onClick={goCheckout}
          data-testid={`pl-cta-${plan.id}`}>
-        {plan.trialDays ? t('plans_cta_trial') : t('plans_cta')}
+        {t('plans_cta')}
       </a>
-      <div className="pl-cta-sub">{plan.trialDays ? t('plans_no_card') : ' '}</div>
+      <div className="pl-cta-sub">{' '}</div>
 
       <ul className="pl-features">
         {CARD_FEATURES[plan.id].map(key => {
@@ -198,7 +199,7 @@ export default function PlansPage({ paywall = false }) {
         {/* Topbar: logo + voltar à esquerda, idioma à direita */}
         <div className="pl-topbar">
           <div className="pl-topbar-left">
-            <div className="pl-topbar-logo">Zefiro<span>Split</span></div>
+            <LogoMark />
             {!paywall && (
               <>
                 <span className="pl-topbar-sep" />
@@ -262,7 +263,42 @@ export default function PlansPage({ paywall = false }) {
 
         <CompareTable periodo={periodo} />
         <Faq />
+
       </div>
+
+      {/* Rodapé premium — full-width, fora do pl-wrap */}
+      <footer className="ld-footer">
+        <div className="ld-footer-glow" aria-hidden="true" />
+        <div className="ld-footer-content">
+          <div className="ld-footer-brand">
+            <LogoMark size="lg" />
+            <p className="ld-footer-tagline">ZefiroSplit — fatiamento inteligente de malhas 3D.</p>
+            <a href="tel:+5561920192600" className="ld-footer-phone-link">
+              📱 +55 61 9201-9260
+            </a>
+          </div>
+          <div className="ld-footer-col">
+            <span className="ld-footer-col-title">Produto</span>
+            <a href="/landing" onClick={e => { e.preventDefault(); navigate('/landing') }}>Funcionalidades</a>
+            <a href="/planos" onClick={e => { e.preventDefault(); navigate('/planos') }}>Planos</a>
+            <a href="/comprar" onClick={e => { e.preventDefault(); navigate('/comprar') }}>Comprar Acesso</a>
+          </div>
+          <div className="ld-footer-col">
+            <span className="ld-footer-col-title">Suporte</span>
+            <a href="/landing#faq">FAQ</a>
+            <a href="mailto:suporte@zefirosplit.com">Contato</a>
+            <a href="tel:+5561920192600">📱 +55 61 9201-9260</a>
+          </div>
+          <div className="ld-footer-col">
+            <span className="ld-footer-col-title">Legal</span>
+            <a href="#">Termos de uso</a>
+            <a href="#">Privacidade</a>
+          </div>
+        </div>
+        <div className="ld-footer-bottom-bar">
+          <span className="ld-footer-copy">© {new Date().getFullYear()} ZefiroSplit — 3D Mesh Splitter</span>
+        </div>
+      </footer>
     </div>
   )
 }

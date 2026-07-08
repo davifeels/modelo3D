@@ -132,7 +132,8 @@ _MAX_UPLOAD_MB = 200
 
 
 @router.post("/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...),
+                 user: User = Depends(get_current_user)):
     import asyncio, tempfile
     allowed = {".stl", ".obj"}
     ext = os.path.splitext(file.filename)[1]
@@ -159,8 +160,9 @@ async def upload(file: UploadFile = File(...)):
         )
     except asyncio.TimeoutError:
         raise HTTPException(504, "Tempo limite ao processar o arquivo.")
-    except Exception as e:
-        raise HTTPException(400, f"Arquivo inválido ou corrompido: {e}")
+    except Exception:
+        # Não vaza o detalhe da exceção interna ao cliente
+        raise HTTPException(400, "Arquivo inválido ou corrompido.")
     finally:
         try:
             os.unlink(tmp_path)
@@ -170,7 +172,7 @@ async def upload(file: UploadFile = File(...)):
     # load_mesh viu apenas o arquivo temporário — restaura o nome original do upload
     info["name"] = os.path.basename(file.filename)
 
-    sid = sess.create()
+    sid = sess.create(owner=user.id)
     names = _make_names(info["name"], components)
     sess.update(sid, parts=components, names=names, info=info)
 
@@ -219,8 +221,10 @@ async def upload(file: UploadFile = File(...)):
 
 
 @router.get("/session/{session_id}")
-def check_session(session_id: str):
+def check_session(session_id: str, user: User = Depends(get_current_user)):
     """Verifica se uma sessão ainda existe e retorna seus metadados."""
+    if not sess.owned_by(session_id, user.id):
+        raise HTTPException(404, "Sessão não encontrada ou expirada.")
     s = sess.get(session_id)
     if not s or not s.get("parts"):
         raise HTTPException(404, "Sessão não encontrada ou expirada.")
@@ -257,18 +261,18 @@ def check_session(session_id: str):
 
 
 @router.get("/mesh/{session_id}/{part_idx}")
-def get_mesh(session_id: str, part_idx: int):
+def get_mesh(session_id: str, part_idx: int, user: User = Depends(get_current_user)):
     """Retorna dados completos da mesh como JSON (fallback)."""
-    s = _get_session(session_id)
+    s = _get_owned_session(session_id, user)
     _check_idx(part_idx, s["parts"])
     mesh = s["parts"][part_idx]
     return sess.mesh_to_dict(mesh, s["names"][part_idx])
 
 
 @router.get("/mesh-bin/{session_id}/{part_idx}")
-def get_mesh_bin(session_id: str, part_idx: int):
+def get_mesh_bin(session_id: str, part_idx: int, user: User = Depends(get_current_user)):
     """Retorna mesh em formato binário compacto (muito mais rápido que JSON)."""
-    s = _get_session(session_id)
+    s = _get_owned_session(session_id, user)
     _check_idx(part_idx, s["parts"])
     mesh = s["parts"][part_idx]
     data = sess.mesh_to_binary(session_id, part_idx, mesh)
@@ -276,18 +280,18 @@ def get_mesh_bin(session_id: str, part_idx: int):
 
 
 @router.get("/mesh-adj/{session_id}/{part_idx}")
-def get_mesh_adj(session_id: str, part_idx: int):
+def get_mesh_adj(session_id: str, part_idx: int, user: User = Depends(get_current_user)):
     """Retorna apenas dados de adjacência com cache (lazy, para flood fill)."""
-    s = _get_session(session_id)
+    s = _get_owned_session(session_id, user)
     _check_idx(part_idx, s["parts"])
     mesh = s["parts"][part_idx]
     return sess.mesh_adjacency(session_id, part_idx, mesh)
 
 
 @router.get("/mesh-stl/{session_id}/{part_idx}")
-def get_mesh_stl(session_id: str, part_idx: int):
+def get_mesh_stl(session_id: str, part_idx: int, user: User = Depends(get_current_user)):
     """Retorna a mesh como STL binário para carregamento no Three.js."""
-    s = _get_session(session_id)
+    s = _get_owned_session(session_id, user)
     _check_idx(part_idx, s["parts"])
     mesh = s["parts"][part_idx]
     stl_bytes = mesh.export(file_type="stl")
@@ -860,6 +864,14 @@ def _get_session(sid: str) -> dict:
     if not s:
         raise HTTPException(404, "Sessão não encontrada ou expirada.")
     return s
+
+
+def _get_owned_session(sid: str, user: User) -> dict:
+    """Como _get_session, mas 404 se a sessão pertencer a OUTRO usuário —
+    impede que um cliente autenticado leia a malha de outro pelo session_id."""
+    if not sess.owned_by(sid, user.id):
+        raise HTTPException(404, "Sessão não encontrada ou expirada.")
+    return _get_session(sid)
 
 
 def _check_idx(idx: int, lst: list):

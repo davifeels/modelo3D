@@ -17,7 +17,6 @@ export const PLANS = {
     annual: 449.90,
     annualPerMonth: 37.49,
     popular: true,
-    trialDays: 7,
   },
 }
 
@@ -31,8 +30,9 @@ export function fmtBRL(v) {
   return 'R$ ' + v.toFixed(2).replace('.', ',')
 }
 
-export function checkoutUrl(planoId, periodo) {
-  return `/checkout?plano=${planoId}&periodo=${periodo}`
+// A compra acontece FORA do app principal (briefing da refatoração): /comprar
+export function buyUrl(planoId, periodo) {
+  return `/comprar?plano=${planoId}&periodo=${periodo}`
 }
 
 // ── Tabela de recursos ──────────────────────────────────────────────────────
@@ -64,4 +64,4 @@ export const CARD_FEATURES = {
         'feat_support', 'feat_early'],
 }
 
-export const FAQ_KEYS = ['faq_limit', 'faq_trial', 'faq_change', 'faq_cancel_annual', 'faq_projects', 'faq_payment']
+export const FAQ_KEYS = ['faq_limit', 'faq_change', 'faq_cancel_annual', 'faq_projects', 'faq_payment']

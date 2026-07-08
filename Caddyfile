@@ -1,0 +1,17 @@
+# Proxy de borda com HTTPS AUTOMÁTICO (Let's Encrypt) para todos os subdomínios.
+# O {$DOMAIN} vem do .env. Todos os nomes servem a MESMA SPA — o frontend decide
+# a tela pelo hostname (site / app. / admin.). O /api é repassado ao backend
+# pelo nginx do próprio container frontend.
+#
+# Requisitos: portas 80 e 443 abertas na VPS e os registros DNS (@, www, app,
+# admin) apontando para o IP da VPS.
+
+{
+	# E-mail para os avisos do certificado (expiração etc.)
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN}, www.{$DOMAIN}, app.{$DOMAIN}, admin.{$DOMAIN} {
+	encode gzip zstd
+	reverse_proxy frontend:80
+}

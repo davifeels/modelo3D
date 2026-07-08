@@ -1,9 +1,23 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ZefiroSplit — configuração de PRODUÇÃO (segura por padrão).
+#
+#   • NÃO tem ZS_DEV_BILLING (os endpoints /dev/*, o vazamento de dev_credentials
+#     e o rate-limit ×100 ficam desligados).
+#   • NÃO publica a porta 8000: o backend só é acessível pelo nginx (frontend).
+#   • Docs/Swagger desligados.
+#   • Segredos vêm do arquivo .env (NÃO versionado) — veja .env.example.
+#
+# Desenvolvimento/testes: `docker compose up` mescla automaticamente o
+# docker-compose.override.yml, que religa dev billing, publica a 8000 e habilita
+# as docs. Para subir SÓ a config de produção:
+#     docker compose -f docker-compose.yml up -d
+# ─────────────────────────────────────────────────────────────────────────────
 services:
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: zefiro
-      POSTGRES_PASSWORD: zefiro
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
       POSTGRES_DB: zefiro
     volumes:
       - zefiro-db:/var/lib/postgresql/data
@@ -19,21 +33,25 @@ services:
       context: .
       dockerfile: web/backend/Dockerfile
     image: zefirosplit-backend
-    ports:
-      - "8000:8000"          # mesmo endereço usado pela suíte de testes de API
     environment:
-      DATABASE_URL: postgresql+psycopg2://zefiro:zefiro@db:5432/zefiro
-      JWT_SECRET: troque-este-segredo-em-producao
-      # Sem gateway de pagamento ainda: /dev/* liberado para simular ativação.
-      # Ao plugar o gateway real: PAYMENT_GATEWAY=stripe, remover ZS_DEV_BILLING
-      # e definir WEBHOOK_SECRET com o segredo do provedor.
-      ZS_DEV_BILLING: "1"
-      WEBHOOK_SECRET: test-secret   # valor que tests/test_billing.py usa; trocar em produção
+      DATABASE_URL: postgresql+psycopg2://zefiro:${POSTGRES_PASSWORD:?}@db:5432/zefiro
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no .env (openssl rand -hex 32)}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?defina WEBHOOK_SECRET no .env}
       BILLING_ENFORCE: "1"
-      # Conta do dono, criada/atualizada no startup com Pro ativo (bootstrap.py).
-      # Trocar ADMIN_PASSWORD e reiniciar redefine a senha.
-      ADMIN_EMAIL: davifeels23@gmail.com
-      ADMIN_PASSWORD: ZefiroAdmin!f50077e3
+      # Origens permitidas no CORS (o browser fala com /api via nginx, mesma origem)
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      # Conta do dono, criada/atualizada no startup (bootstrap.py)
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?defina ADMIN_EMAIL no .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?defina ADMIN_PASSWORD no .env}
+      # Link do sistema incluído nos e-mails
+      APP_URL: ${APP_URL:-http://localhost:5173}
+      # Gateway de pagamento. 'none' = compra simulada; 'mercadopago' = real.
+      PAYMENT_GATEWAY: ${PAYMENT_GATEWAY:-none}
+      MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN:-}
+      MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET:-}
+      MP_WEBHOOK_URL: ${MP_WEBHOOK_URL:-}
+      # E-mail real: definir SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/SMTP_FROM.
+      # Sem SMTP_HOST os envios são SIMULADOS (registrados em email_logs).
     depends_on:
       db:
         condition: service_healthy
@@ -45,7 +63,10 @@ services:
       dockerfile: web/frontend/Dockerfile
     image: zefirosplit-frontend
     ports:
-      - "5173:80"            # mesmo endereço usado pelos testes E2E
+      # Só loopback: em dev você navega em localhost:5173; em produção quem
+      # fica exposto ao mundo é o Caddy (80/443), que fala com este container
+      # pela rede interna do compose.
+      - "127.0.0.1:5173:80"
     depends_on:
       - backend
     restart: unless-stopped

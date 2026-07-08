@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Overlay de PRODUÇÃO (na VPS): adiciona o Caddy (HTTPS automático + subdomínios)
+# na frente do stack base. Segredos e DOMAIN vêm do .env.
+#
+# Subir na VPS:
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# NÃO use o docker-compose.override.yml aqui (ele é dev). Os dois -f acima já
+# excluem o override automaticamente.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  backend:
+    environment:
+      # Links dos e-mails e back_urls do checkout apontam para o app do cliente
+      APP_URL: https://app.${DOMAIN:?defina DOMAIN no .env}
+      # Origens liberadas no CORS (todos os subdomínios do site)
+      ALLOWED_ORIGINS: https://${DOMAIN},https://www.${DOMAIN},https://app.${DOMAIN},https://admin.${DOMAIN}
+      # URL pública que o Mercado Pago chama após o pagamento
+      MP_WEBHOOK_URL: https://app.${DOMAIN}/api/billing/webhook
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"        # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?defina DOMAIN no .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # certificados (persistente — não re-emitir toda hora)
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../store.js'
+import LogoMark from './LogoMark.jsx'
 import { t } from '../i18n.js'
 import { api } from '../api.js'
 import { navigate } from '../router.js'
@@ -54,7 +55,7 @@ export default function AccountPage() {
       <div className="pl-wrap">
         <div className="pl-topbar">
           <div className="pl-topbar-left">
-            <div className="pl-topbar-logo">Zefiro<span>Split</span></div>
+            <LogoMark />
             <span className="pl-topbar-sep" />
             <a className="pl-back" href="/" onClick={e => { e.preventDefault(); navigate('/') }}>
               {t('acct_back_app')}

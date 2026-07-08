@@ -1,18 +1,25 @@
-"""Seed da conta admin via ambiente (ADMIN_EMAIL + ADMIN_PASSWORD).
+"""Seed inicial via ambiente (ADMIN_EMAIL + ADMIN_PASSWORD), rodado no startup.
 
-Rodado no startup: garante que a conta do dono do produto exista com plano
-Pro ativo (ilimitado, sem expirar na prática). O ambiente é a fonte da senha —
-trocar ADMIN_PASSWORD e reiniciar redefine a senha. O login é o normal
-(POST /api/auth/login) e devolve o mesmo token JWT dos demais usuários.
+Cria/atualiza DUAS contas com as mesmas credenciais:
+  1. AdminUser  → login do PAINEL administrativo (/admin), role 'owner'
+  2. User       → conta de CLIENTE do dono, com Pro ativo (~10 anos), para
+                  usar o app em si sem passar pela compra
+
+O ambiente é a fonte da senha — trocar ADMIN_PASSWORD e reiniciar redefine.
 """
 import os
 from datetime import datetime, timedelta
 
 from db import SessionLocal
-from models import Subscription, User
-from security import hash_password, verify_password
+from models import AdminUser, Subscription, User
+from security import generate_access_code, hash_password, verify_password
 
 _ADMIN_ACCESS_DAYS = 3650  # ~10 anos
+
+
+def _sync_password(obj, password: str):
+    if not verify_password(password, obj.password_hash):
+        obj.password_hash = hash_password(password)
 
 
 def seed_admin():
@@ -23,13 +30,29 @@ def seed_admin():
 
     db = SessionLocal()
     try:
+        # 1) Admin do painel
+        admin = db.query(AdminUser).filter(AdminUser.email == email).first()
+        if admin is None:
+            admin = AdminUser(email=email, nome="Admin",
+                              password_hash=hash_password(password), role="owner")
+            db.add(admin)
+        else:
+            _sync_password(admin, password)
+
+        # 2) Conta de cliente do dono (Pro ativo, sem passar pela compra)
         user = db.query(User).filter(User.email == email).first()
         if user is None:
-            user = User(email=email, password_hash=hash_password(password), name="Admin")
+            user = User(email=email, password_hash=hash_password(password),
+                        name="Admin", status="ativo", plano="pro",
+                        codigo_acesso=generate_access_code())
             db.add(user)
             db.flush()
-        elif not verify_password(password, user.password_hash):
-            user.password_hash = hash_password(password)
+        else:
+            _sync_password(user, password)
+            user.status = "ativo"
+            user.plano = "pro"
+            if not user.codigo_acesso:
+                user.codigo_acesso = generate_access_code()
 
         now = datetime.utcnow()
         sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()

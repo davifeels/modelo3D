@@ -1,0 +1,16 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Override de DESENVOLVIMENTO — mesclado automaticamente por `docker compose up`.
+# É o stack que você NAVEGA (frontend em :5173). Banco persistente (zefiro-db).
+#
+# NÃO tem ZS_DEV_BILLING nem publica a 8000 de propósito: assim a suíte de
+# testes NÃO consegue rodar contra este stack (ela some/pula se não achar a
+# 8000) — nada de usuário de teste poluindo o banco que você navega.
+#
+# Para rodar os testes, use o stack isolado (banco efêmero):  ./scripts/test.sh
+# Produção (sem este override):  docker compose -f docker-compose.yml up -d
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  backend:
+    environment:
+      ZS_ENABLE_DOCS: "1"       # Swagger em /docs (interno) para inspecionar em dev
+      PAYMENT_GATEWAY: "none"   # compra simulada em dev; produção usa o .env (MP)

@@ -92,9 +92,9 @@ class TestPaginaPlanos:
         page.locator('[data-testid="pl-faq-faq_limit"] button').click()
         assert "open" in page.locator('[data-testid="pl-faq-faq_limit"]').get_attribute("class")
         # Abrir a segunda fecha a primeira — apenas uma aberta por vez
-        page.locator('[data-testid="pl-faq-faq_trial"] button').click()
+        page.locator('[data-testid="pl-faq-faq_change"] button').click()
         assert faq.locator(".pl-faq-item.open").count() == 1
-        assert "open" in page.locator('[data-testid="pl-faq-faq_trial"]').get_attribute("class")
+        assert "open" in page.locator('[data-testid="pl-faq-faq_change"]').get_attribute("class")
 
     def test_rota_direta_planos(self, page):
         """/planos é roteável direto (paywall pós-login usa a mesma página)."""
@@ -103,44 +103,25 @@ class TestPaginaPlanos:
         assert page.url.endswith("/planos")
 
 
-# ── Checkout ──────────────────────────────────────────────────────────────────
+# ── Compra (a compra acontece FORA do app: /comprar) ─────────────────────────
 
-class TestCheckout:
-    def test_cta_redireciona_com_plano_e_periodo(self, page):
+class TestCtaCompra:
+    def test_cta_do_paywall_leva_a_compra_com_plano_e_periodo(self, page):
         _goto_planos(page)
         page.locator('[data-testid="pl-toggle-anual"]').click()
         page.locator('[data-testid="pl-cta-pro"]').click()
-        page.wait_for_selector('[data-testid="co-summary"]', timeout=10000)
+        page.wait_for_selector('[data-testid="buy-form"]', timeout=10000)
         assert "plano=pro" in page.url and "periodo=anual" in page.url
-        # Pré-seleção refletida no resumo
-        assert page.locator('[data-testid="co-plan"]').inner_text() == "Pro"
-        assert "Anual" in page.locator('[data-testid="co-period"]').inner_text()
-        assert "R$ 449,90" in page.locator('[data-testid="co-total"]').inner_text()
-        # Pro tem aviso do trial de 7 dias sem cartão
-        assert "7 dias" in page.locator('[data-testid="co-trial"]').inner_text()
+        # Pré-seleção refletida no total
+        assert "R$ 449,90" in page.locator('[data-testid="buy-total"]').inner_text()
 
     def test_url_direta_preseleciona_essencial_mensal(self, page):
-        page.goto(f"{BASE_URL}/checkout?plano=essencial&periodo=mensal", wait_until="networkidle")
-        page.wait_for_selector('[data-testid="co-summary"]', timeout=10000)
-        assert page.locator('[data-testid="co-plan"]').inner_text() == "Essencial"
-        assert "Mensal" in page.locator('[data-testid="co-period"]').inner_text()
-        assert "R$ 19,90" in page.locator('[data-testid="co-total"]').inner_text()
-
-    def test_pix_e_boleto_somente_no_plano_anual(self, page):
-        # Mensal: PIX e boleto desabilitados (regra de negócio)
-        page.goto(f"{BASE_URL}/checkout?plano=pro&periodo=mensal", wait_until="networkidle")
-        page.wait_for_selector('[data-testid="co-summary"]', timeout=10000)
-        assert page.locator('[data-testid="co-pay-card"]').is_enabled()
-        assert page.locator('[data-testid="co-pay-pix"]').is_disabled()
-        assert page.locator('[data-testid="co-pay-boleto"]').is_disabled()
-        # Anual: todos habilitados
-        page.goto(f"{BASE_URL}/checkout?plano=pro&periodo=anual", wait_until="networkidle")
-        page.wait_for_selector('[data-testid="co-summary"]', timeout=10000)
-        assert page.locator('[data-testid="co-pay-pix"]').is_enabled()
-        assert page.locator('[data-testid="co-pay-boleto"]').is_enabled()
+        page.goto(f"{BASE_URL}/comprar?plano=essencial&periodo=mensal", wait_until="networkidle")
+        page.wait_for_selector('[data-testid="buy-form"]', timeout=10000)
+        assert "R$ 19,90" in page.locator('[data-testid="buy-total"]').inner_text()
 
     def test_parametros_invalidos_caem_no_padrao(self, page):
-        page.goto(f"{BASE_URL}/checkout?plano=xyz&periodo=abc", wait_until="networkidle")
-        page.wait_for_selector('[data-testid="co-summary"]', timeout=10000)
-        assert page.locator('[data-testid="co-plan"]').inner_text() == "Essencial"
-        assert "Mensal" in page.locator('[data-testid="co-period"]').inner_text()
+        page.goto(f"{BASE_URL}/comprar?plano=xyz&periodo=abc", wait_until="networkidle")
+        page.wait_for_selector('[data-testid="buy-form"]', timeout=10000)
+        # Padrão: Pro mensal
+        assert "R$ 49,90" in page.locator('[data-testid="buy-total"]').inner_text()
