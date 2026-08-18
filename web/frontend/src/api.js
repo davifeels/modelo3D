@@ -121,6 +121,9 @@ export const api = {
   checkSession: (sessionId) =>
     req('GET', `/session/${sessionId}`),
 
+  restoreOriginal: (sessionId) =>
+    req('POST', '/restore-original', { session_id: sessionId }),
+
   getInterfaces: (sessionId) =>
     req('GET', `/interfaces/${sessionId}`),
 

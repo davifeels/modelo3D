@@ -71,6 +71,10 @@ const STRINGS = {
   tips_title:        { pt: 'Dicas de uso', en: 'Usage tips' },
   tip_paint_html:    { pt: 'Pinte a região que será a <b> (vermelha, recebe as cavidades). A área não pintada será a <a> (azul, recebe os pinos).', en: 'Paint the region that becomes <b> (red, gets the cavities). The unpainted area becomes <a> (blue, gets the pins).' },
   tip_undo:          { pt: 'Use Ctrl+Z para desfazer.', en: 'Use Ctrl+Z to undo.' },
+  tip_orbit_rightclick: {
+    pt: 'O botão esquerdo pinta. Para girar a câmera (ex.: ver a parte de trás), use o botão direito ou o botão do meio.',
+    en: 'Left button paints. To rotate the camera (e.g. to see the back), use the right or middle mouse button.',
+  },
 
   // Right panel — headers por etapa
   rp_auto_cut:       { pt: 'Corte Automático', en: 'Automatic Cut' },
@@ -250,6 +254,12 @@ const STRINGS = {
   btn_back:          { pt: 'Voltar', en: 'Back' },
   btn_adjust_cut:    { pt: 'Ajustar corte', en: 'Adjust cut' },
   btn_import_new:    { pt: 'Importar novo modelo', en: 'Import new model' },
+  btn_back_assembly: { pt: 'Voltar à montagem completa', en: 'Back to full assembly' },
+  btn_restore_original: { pt: 'Restaurar modelo original', en: 'Restore original model' },
+  confirm_restore_original: {
+    pt: 'Isso descarta todos os cortes e encaixes feitos nesta sessão e volta ao modelo exatamente como foi enviado. Continuar?',
+    en: 'This discards every cut and joint made in this session and reverts to the model exactly as uploaded. Continue?',
+  },
 
   // Viewer loading
   loading_geometry:  { pt: 'Baixando geometria…', en: 'Downloading geometry…' },
@@ -262,6 +272,10 @@ const STRINGS = {
   err_paint:         { pt: 'Erro na seleção. Tente outro ponto ou ajuste o ângulo.', en: 'Selection error. Try another point or adjust the angle.' },
   err_smart:         { pt: 'Erro no Smart Select. Tente outro ponto.', en: 'Smart Select error. Try another point.' },
   err_generic:       { pt: 'Ocorreu um erro. Tente novamente.', en: 'An error occurred. Please try again.' },
+  err_joint_not_created: {
+    pt: 'Nenhum encaixe pôde ser criado nesta interface. Veja o aviso abaixo, ajuste os parâmetros e confirme de novo.',
+    en: 'No connector could be created at this interface. See the warning below, adjust the parameters and confirm again.',
+  },
   warn_no_faces:     { pt: 'Nenhuma face selecionada. Pinte a região desejada primeiro.', en: 'No faces selected. Paint the desired region first.' },
   heavy_title:       { pt: 'Modelo pesado', en: 'Heavy model' },
   heavy_msg:         { pt: 'Modelo com muitas faces. Operações podem demorar.', en: 'Model has many faces. Operations may take longer.' },

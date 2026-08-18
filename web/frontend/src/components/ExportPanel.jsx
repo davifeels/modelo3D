@@ -15,7 +15,10 @@ function download(url, filename) {
   document.body.removeChild(a)
 }
 
-const DONE_COLORS = ['#22c55e', '#16a34a', '#15803d', '#166534', '#14532d']
+// Tons neutros — nenhum entra em PART_COLORS (que já usa verde no índice 2 e
+// 7), senão uma peça pronta e uma peça comum do mesmo índice ficam com a
+// mesma bolinha e o usuário não consegue distinguir qual já tem encaixe.
+const DONE_COLORS = ['#94a3b8', '#64748b', '#475569', '#334155', '#1e293b']
 
 export default function ExportPanel() {
   const { sessionId, parts, completedNames, exportFmt, warnings, lang } = useStore()

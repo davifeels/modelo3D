@@ -177,7 +177,37 @@ export default function RightPanel({ viewerRef }) {
     selectedPinIdx, setSelectedPin, updatePin,
     maskLabels, maskRegionSizes, maskGranularity, selectedRegionId,
     afterSegmentMask, setSelectedRegion, exitMultiMask, afterMultiMaskCut,
+    backToAssembly, afterRestoreOriginal,
   } = useStore()
+
+  // Volta para a visão com TODAS as peças da sessão (fonte da verdade é o
+  // backend — nada se perde mesmo se o frontend descartou peças ao editar
+  // uma delas isoladamente via "cortar de novo").
+  async function handleBackToAssembly() {
+    setLoading(true, t('loading_model'), 50)
+    try {
+      const data = await api.checkSession(sessionId)
+      backToAssembly(data.parts)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Descarta cortes/encaixes e volta ao mesh exatamente como veio do upload.
+  async function handleRestoreOriginal() {
+    if (!window.confirm(t('confirm_restore_original'))) return
+    setLoading(true, t('loading_model'), 50)
+    try {
+      const res = await api.restoreOriginal(sessionId)
+      afterRestoreOriginal(res.parts_meta)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function handleSuggestCuts() {
     setLoading(true, t('analyzing'), 30)
@@ -273,6 +303,10 @@ export default function RightPanel({ viewerRef }) {
       })) : undefined
       const res = await api.confirm(sessionId, partAIdx, partBIdx, cutOrigin, cutNormal, jointType, jointFit, pins)
       afterConfirm(res.parts_meta, res.warnings || [])
+      // O backend pode responder 200 com as peças intocadas (booleana falhou
+      // silenciosamente) — sem isso o usuário só veria um aviso discreto no
+      // rodapé e acharia que o encaixe foi criado.
+      if (res.joint_applied === false) setError(t('err_joint_not_created'))
     } catch (e) {
       setError(e.message)
     } finally {
@@ -751,6 +785,12 @@ export default function RightPanel({ viewerRef }) {
                 <ArrowLeftIcon /> {t('btn_import_other')}
               </button>
             </div>
+            {completedNames.length > 0 && (
+              <button className="btn-back" style={{ width: '100%', justifyContent: 'center', fontSize: 12, marginTop: 6 }}
+                onClick={handleRestoreOriginal}>
+                {t('btn_restore_original')}
+              </button>
+            )}
           </>
         )}
 
@@ -795,6 +835,12 @@ export default function RightPanel({ viewerRef }) {
                 {t('btn_manual_sel')}
               </button>
             </div>
+            {completedNames.length > 0 && (
+              <button className="btn-back" style={{ width: '100%', justifyContent: 'center', fontSize: 12, marginTop: 6 }}
+                onClick={handleBackToAssembly}>
+                <ArrowLeftIcon /> {t('btn_back_assembly')}
+              </button>
+            )}
           </>
         )}
 
@@ -821,6 +867,12 @@ export default function RightPanel({ viewerRef }) {
                 <ArrowLeftIcon /> {t('btn_back')}
               </button>
             </div>
+            {completedNames.length > 0 && (
+              <button className="btn-back" style={{ width: '100%', justifyContent: 'center', fontSize: 12, marginTop: 6 }}
+                onClick={handleBackToAssembly}>
+                <ArrowLeftIcon /> {t('btn_back_assembly')}
+              </button>
+            )}
           </>
         )}
 
@@ -845,6 +897,9 @@ export default function RightPanel({ viewerRef }) {
           <div className="rp-footer-actions">
             <button className="btn-back" onClick={() => useStore.getState().reset()}>
               <ArrowLeftIcon /> {t('btn_import_new')}
+            </button>
+            <button className="btn-back" style={{ fontSize: 12 }} onClick={handleRestoreOriginal}>
+              {t('btn_restore_original')}
             </button>
           </div>
         )}

@@ -177,6 +177,26 @@ export const useStore = create((set, get) => ({
     set({ parts, maskLabels: null, maskRegionSizes: {}, selectedRegionId: null,
           warnings: [], step: 'result' }),
 
+  // Re-sincroniza `parts` com a sessão no backend (fonte da verdade — nunca
+  // perde peças) e volta para a tela de montagem completa, sem descartar
+  // nenhum corte/encaixe já feito.
+  backToAssembly: (parts) =>
+    set({
+      parts, step: 'result', selectedPinIdx: null,
+      maskLabels: null, maskRegionSizes: {}, selectedRegionId: null,
+      paintedFaces: [], paintedCount: 0,
+    }),
+
+  // Descarta todos os cortes/encaixes da sessão e volta ao estado do upload.
+  afterRestoreOriginal: (parts) =>
+    set({
+      parts, step: 'loaded', selectedPart: 0, completedNames: [],
+      paintedFaces: [], paintedCount: 0, cutSuggestions: [], activeCutPlane: null,
+      cutOrigin: null, cutNormal: null, maskLabels: null, maskRegionSizes: {},
+      selectedRegionId: null, jointPins: [], jointParams: null, warnings: [],
+      selectedPinIdx: null,
+    }),
+
   // Edição individual (§2.2): aplica patch a um conector do preview
   updatePin: (idx, patch) => set(s => ({
     jointPins: s.jointPins.map((p, i) => (i === idx ? { ...p, ...patch } : p)),

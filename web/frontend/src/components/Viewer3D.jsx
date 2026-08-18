@@ -1231,10 +1231,17 @@ const Viewer3D = forwardRef(function Viewer3D({ mode = 'single', paneIdx }, ref)
         emissive: selected ? new THREE.Color(0x2244aa) : new THREE.Color(0x000000),
       })
 
+      // O macho protrai da face de corte de A EM DIREÇÃO A B — ou seja, para
+      // o lado NEGATIVO de `dir` (backend: normal aponta de B para A; ver
+      // _make_pin/_make_ball_male/_make_dovetail_male em src/joints.py).
+      // addMale recebe alongDir sempre positivo; o sinal é invertido aqui
+      // para que o overlay coincida com o sólido real gerado pela booleana
+      // — sem isso o pino era desenhado do lado ERRADO do corte (dentro de
+      // A, longe de B), parecendo um cilindro solto e não um encaixe.
       const addMale = (geo, alongDir) => {
         const m = new THREE.Mesh(geo, pinMat)
         m.position.set(px, py, pz)
-        m.position.addScaledVector(dir, alongDir)
+        m.position.addScaledVector(dir, -alongDir)
         m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
         m.visible = visible
         m.userData.pinIdx = pinIdx

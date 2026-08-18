@@ -130,6 +130,11 @@ export default function SidePanel({ viewerRef }) {
           <p className="tip-text" style={{ marginTop: 8 }}>
             {t('tip_undo')}
           </p>
+          {step === 'painting' && (
+            <p className="tip-text" style={{ marginTop: 8 }}>
+              {t('tip_orbit_rightclick')}
+            </p>
+          )}
         </div>
       )}
     </div>

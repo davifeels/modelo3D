@@ -174,7 +174,13 @@ async def upload(file: UploadFile = File(...),
 
     sid = sess.create(owner=user.id)
     names = _make_names(info["name"], components)
-    sess.update(sid, parts=components, names=names, info=info)
+    # original_parts/original_names: cópia intocada do upload — permite
+    # "voltar ao modelo original" mesmo depois de cortes/encaixes (nunca é
+    # escrita depois daqui, só lida em /restore-original)
+    sess.update(
+        sid, parts=components, names=names, info=info,
+        original_parts=[c.copy() for c in components], original_names=list(names),
+    )
 
     # Pré-computa em background: binário de mesh + grafo de segmentação
     # IMPORTANTE: usa _bg_executor (referência módulo-nível) para evitar bloqueio por GC
@@ -784,6 +790,14 @@ def confirm(req: ConfirmReq):
             raise HTTPException(500, f"Erro ao gerar encaixes: {e}")
     warnings = notes + warnings
 
+    applied = _joint_applied(mesh_a, mesh_b, new_a, new_b)
+    if not applied:
+        warnings = [
+            "Nenhum encaixe pôde ser criado nesta interface (parede fina, corte "
+            "instável ou geometria incompatível) — a peça foi mantida sem alteração. "
+            "Tente reduzir o diâmetro do pino, usar o fit 'Flexível' ou ajustar o corte."
+        ] + warnings
+
     parts = list(s["parts"])
     parts[req.part_a_idx] = new_a
     parts[req.part_b_idx] = new_b
@@ -792,6 +806,7 @@ def confirm(req: ConfirmReq):
                          s["names"][req.part_a_idx], s["names"][req.part_b_idx])
 
     return {
+        "joint_applied": applied,
         "warnings": warnings,
         "parts_meta": _parts_meta(parts, s["names"]),
     }
@@ -842,6 +857,8 @@ def confirm_all(req: ConfirmAllReq):
             new_a, new_b, warns = add_joints(
                 mesh_a, mesh_b, origin, normal, params, cut_pts, origins=origins,
             )
+            if not _joint_applied(mesh_a, mesh_b, new_a, new_b):
+                all_warnings.append(prefix + "nenhum encaixe pôde ser criado (parede fina ou geometria incompatível).")
             parts[ia], parts[ib] = new_a, new_b
             n_done += 1
             all_warnings += [prefix + w for w in (notes + warns)]
@@ -855,6 +872,33 @@ def confirm_all(req: ConfirmAllReq):
         "warnings": all_warnings,
         "parts_meta": _parts_meta(parts, s["names"]),
     }
+
+
+# ── Restaurar modelo original ────────────────────────────────────────────────
+
+class RestoreOriginalReq(BaseModel):
+    session_id: str
+
+
+@router.post("/restore-original")
+def restore_original(req: RestoreOriginalReq):
+    """
+    Descarta TODOS os cortes/encaixes feitos na sessão e volta ao estado
+    exatamente como veio do upload. As peças atuais na sessão são
+    substituídas pela cópia intocada guardada em /upload — o arquivo
+    original nunca foi alterado, só as peças de trabalho são resetadas.
+    """
+    s = _get_session(req.session_id)
+    original_parts = s.get("original_parts")
+    original_names = s.get("original_names")
+    if not original_parts:
+        raise HTTPException(404, "Modelo original não disponível para esta sessão.")
+
+    parts = [p.copy() for p in original_parts]
+    names = list(original_names)
+    sess.update(req.session_id, parts=parts, names=names, interfaces=[])
+
+    return {"parts_meta": _parts_meta(parts, names)}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -877,6 +921,24 @@ def _get_owned_session(sid: str, user: User) -> dict:
 def _check_idx(idx: int, lst: list):
     if idx < 0 or idx >= len(lst):
         raise HTTPException(422, f"Índice de parte inválido: {idx}")
+
+
+def _joint_applied(mesh_a, mesh_b, new_a, new_b, eps: float = 1e-6) -> bool:
+    """
+    True se a operação booleana REALMENTE adicionou o pino (macho cresce A)
+    e cortou a cavidade (fêmea encolhe B) — não apenas se rodou sem exceção.
+    Sem essa checagem, uma falha silenciosa das booleanas (ex.: parede fina
+    demais) devolve as peças originais intocadas com um 200 "de sucesso".
+    Sem watertight em ambos os lados de uma comparação, não há como validar
+    volume com confiança — não bloqueia (mantém o comportamento anterior).
+    """
+    grew = True
+    shrank = True
+    if mesh_a.is_watertight and new_a.is_watertight:
+        grew = new_a.volume > mesh_a.volume + eps
+    if mesh_b.is_watertight and new_b.is_watertight:
+        shrank = new_b.volume < mesh_b.volume - eps
+    return bool(grew and shrank)
 
 
 def _validate_joint_type(joint_type: Optional[str]) -> str:

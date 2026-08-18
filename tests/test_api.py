@@ -761,6 +761,66 @@ class TestConfirm:
         _, code = _req("GET", f"/session/{sid}")
         assert code == 200, "GET /session retornou erro após confirm"
 
+    def test_confirm_joint_applied_true_on_success(self):
+        """A mensagem não pode substituir a operação: quando a booleana
+        realmente roda, 'joint_applied' precisa refletir isso (volume real
+        adicionado/removido), não só 'sem exceção'."""
+        sid, cut = self._setup()
+        cf, code = _req("POST", "/confirm", {
+            "session_id": sid,
+            "part_a_idx": cut["part_a_idx"],
+            "part_b_idx": cut["part_b_idx"],
+            "cut_origin": cut["cut_origin"],
+            "cut_normal": cut["cut_normal"],
+        })
+        assert code == 200, f"Falhou: {cf}"
+        assert cf["joint_applied"] is True, f"warnings: {cf['warnings']}"
+
+        parts, _ = _req("GET", f"/session/{sid}")
+        part_a = next(p for p in parts["parts"] if p["idx"] == cut["part_a_idx"])
+        # box_A cresceu (pino) — face_count da esfera cortada só aumenta com geometria nova
+        assert part_a["face_count"] > 0
+
+
+# ── restore-original ──────────────────────────────────────────────────────────
+
+class TestRestoreOriginal:
+
+    def test_restore_reverte_corte_e_encaixe(self):
+        """Cortar + confirmar encaixe, depois restaurar: volta a 1 parte
+        idêntica ao upload original (mesma contagem de faces)."""
+        mesh = trimesh.creation.icosphere(subdivisions=3)
+        sid = _upload_mesh(mesh)
+        n_faces_original = len(mesh.faces)
+
+        cut, code = _req("POST", "/cut", {
+            "session_id": sid, "part_idx": 0, "axis": "z", "position": 0.0,
+        })
+        assert code == 200
+        cf, code = _req("POST", "/confirm", {
+            "session_id": sid,
+            "part_a_idx": cut["part_a_idx"], "part_b_idx": cut["part_b_idx"],
+            "cut_origin": cut["cut_origin"], "cut_normal": cut["cut_normal"],
+        })
+        assert code == 200
+        assert len(cf["parts_meta"]) == 2
+
+        resp, code = _req("POST", "/restore-original", {"session_id": sid})
+        assert code == 200, f"Falhou: {resp}"
+        assert len(resp["parts_meta"]) == 1
+        assert resp["parts_meta"][0]["face_count"] == n_faces_original
+
+        # sessão fica consistente — sem interfaces pendentes órfãs
+        itf, _ = _req("GET", f"/interfaces/{sid}")
+        assert itf["n_pending"] == 0
+        sess_data, code = _req("GET", f"/session/{sid}")
+        assert code == 200
+        assert len(sess_data["parts"]) == 1
+
+    def test_restore_sessao_inexistente_404(self):
+        _, code = _req("POST", "/restore-original", {"session_id": "nao-existe"})
+        assert code == 404
+
 
 # ── export ─────────────────────────────────────────────────────────────────────
 
