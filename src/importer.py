@@ -72,6 +72,14 @@ def load_mesh(path: str):
     n_verts = len(raw.vertices)
     _log.info("Após merge: %d faces, %d verts", n_faces, n_verts)
 
+    # trimesh.load NÃO levanta exceção para arquivo vazio/corrompido/lixo
+    # binário — devolve um Trimesh válido só que com 0 faces. Sem este
+    # guard, o código seguia adiante e só quebrava várias linhas depois
+    # (bounds=None em mesh vazia) com um TypeError sem relação nenhuma
+    # com a causa real ("arquivo inválido").
+    if n_faces == 0 or n_verts == 0:
+        raise ValueError("Arquivo não contém uma malha 3D válida (0 faces).")
+
     # ── Repair (só meshes pequenas, com timeout) ──────────────────────────────
     is_wt = False
     was_repaired = False

@@ -118,15 +118,29 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     except WebhookInvalid:
         raise HTTPException(401, "assinatura_webhook_invalida")
 
+    # event_id vira PK de WebhookEvent (String(120)) — sem validar antes,
+    # um NUL byte quebra o driver do Postgres e uma string >120 chars
+    # quebra o limite da coluna; os dois derrubavam a conexão com 500 em
+    # vez de um erro limpo.
+    eid = evt.get("event_id")
+    if not isinstance(eid, str) or not eid or "\x00" in eid or len(eid) > 120:
+        raise HTTPException(422, "event_id_invalido")
+
     # Idempotência: cada event_id processa uma única vez
-    if db.get(WebhookEvent, evt["event_id"]):
+    if db.get(WebhookEvent, eid):
         return {"ok": True, "duplicate": True}
-    db.add(WebhookEvent(event_id=evt["event_id"]))
+    db.add(WebhookEvent(event_id=eid))
 
     etype = evt["type"]
     if etype == "subscription.activated":
         if evt.get("plan") not in billing.PLANS or evt.get("periodo") not in billing.PERIODOS:
             raise HTTPException(422, "evento_invalido")
+        # user_id vem do evento (metadata/external_reference no gateway real) —
+        # sem esta checagem, um user_id inexistente ou de conta apagada quebra
+        # o INSERT com IntegrityError (FK p/ users.id) e a conexão cai sem
+        # resposta HTTP nenhuma, em vez de um erro limpo.
+        if not db.get(User, evt["user_id"]):
+            raise HTTPException(422, "usuario_inexistente")
         _activate(db, evt["user_id"], evt["plan"], evt["periodo"],
                   evt.get("gateway_customer_id"), evt.get("gateway_subscription_id"))
     elif etype == "subscription.canceled":
@@ -234,7 +248,11 @@ def dev_set_usage(req: DevUsageReq, user: User = Depends(get_current_user),
     period = billing.period_key(now)
     db.query(SliceUsage).filter(SliceUsage.user_id == user.id,
                                 SliceUsage.period == period).delete()
-    for i in range(max(0, req.count)):
+    # Cap defensivo: nenhum plano tem limite > algumas dezenas, e sem isso
+    # um count absurdo (ex.: 2**63) trava o worker num loop de bilhões de
+    # INSERTs em vez de simplesmente falhar rápido.
+    count = min(max(0, req.count), 1000)
+    for i in range(count):
         db.add(SliceUsage(user_id=user.id, period=period, session_id=f"dev-{i}"))
     db.commit()
     return _usage(db, user.id, now)

@@ -592,6 +592,26 @@ class TestMultiMaskAPI:
         mesh = trimesh.creation.cylinder(radius=10.0, height=40.0, sections=32)
         return _upload_mesh(mesh), len(mesh.faces)
 
+    def _upload_bobbin(self):
+        """
+        Eixo escalonado em 3 seções de raio distinto (bobina), unidas por
+        booleana. Ao contrário de um cilindro único — cujas 2 "tampas"
+        isoladas são chapas degeneradas (volume ~0, sem sólido válido) e
+        são corretamente fundidas na parede pela correção de
+        cut_by_multi_mask/_merge_degenerate_regions — cada seção aqui fecha
+        sozinha num sólido real, então sobram 3 partes genuinamente
+        imprimíveis com 2 interfaces entre elas.
+        """
+        a = trimesh.creation.cylinder(radius=12.0, height=15.0, sections=32)
+        a.apply_translation([0, 0, 7.5])
+        b = trimesh.creation.cylinder(radius=8.0, height=15.0, sections=32)
+        b.apply_translation([0, 0, 22.5])
+        c = trimesh.creation.cylinder(radius=12.0, height=15.0, sections=32)
+        c.apply_translation([0, 0, 37.5])
+        mesh = trimesh.boolean.union([a, b, c], engine="manifold")
+        mesh.merge_vertices()
+        return _upload_mesh(mesh), len(mesh.faces)
+
     def test_segment_mask_cilindro(self):
         """Cilindro → 3 regiões (tampa/corpo/tampa); labels cobre todas as faces."""
         sid, n_faces = self._upload_cylinder()
@@ -613,7 +633,7 @@ class TestMultiMaskAPI:
     def test_cut_by_multi_mask_fluxo_completo(self):
         """segment-mask → cut-by-multi-mask: 3 partes watertight, 2 interfaces
         pendentes, confirm-all processa as duas."""
-        sid, _ = self._upload_cylinder()
+        sid, _ = self._upload_bobbin()
         seg, _ = _req("POST", "/segment-mask", {"session_id": sid, "granularity": "media"})
         cut, code = _req("POST", "/cut-by-multi-mask", {
             "session_id": sid, "part_idx": 0, "labels": seg["labels"],
@@ -630,6 +650,23 @@ class TestMultiMaskAPI:
         result, code = _req("POST", "/confirm-all", {"session_id": sid})
         assert code == 200, f"Falhou: {result}"
         assert result["n_processed"] == 2, f"warnings: {result['warnings']}"
+
+    def test_cut_by_multi_mask_tampa_isolada_e_fundida_nao_erro(self):
+        """
+        Regressão: um cilindro único tem 2 'tampas' que, isoladas, são
+        chapas sem volume real — cut_by_multi_mask deve fundi-las na
+        parede automaticamente (não sobra 'peça' fantasma não-imprimível),
+        resultando numa única região válida. Como o modo Professional exige
+        ≥2 regiões para cortar, isso deve dar 422 com mensagem clara —
+        nunca 200 com uma peça watertight-mas-sem-volume no meio.
+        """
+        sid, _ = self._upload_cylinder()
+        seg, _ = _req("POST", "/segment-mask", {"session_id": sid, "granularity": "media"})
+        assert seg["n_regions"] == 3  # segment-mask crua não muda (preview pré-fusão)
+        cut, code = _req("POST", "/cut-by-multi-mask", {
+            "session_id": sid, "part_idx": 0, "labels": seg["labels"],
+        })
+        assert code == 422, f"Esperava 422 (só sobra 1 região válida); veio {code}: {cut}"
 
     def test_cut_by_multi_mask_labels_tamanho_errado_422(self):
         sid, _ = self._upload_cylinder()

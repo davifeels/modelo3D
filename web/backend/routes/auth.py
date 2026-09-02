@@ -10,11 +10,18 @@ NÃO existe registro público — a conta nasce exclusivamente da compra
   abre o link e escolhe a nova (`/reset-password`). Resposta sempre genérica.
 """
 import os
+import re
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+
+# Mesmo padrão de purchase.py/admin.py. Sem este filtro ANTES da query,
+# um e-mail com NUL byte (0x00) chega cru no driver do Postgres, que
+# rejeita com ValueError não tratado -> 500 (login/forgot-password são
+# endpoints públicos, então qualquer anônimo dispara isso à vontade).
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 import emailer
 from db import get_db
@@ -88,7 +95,10 @@ def login(req: LoginReq, db: Session = Depends(get_db)):
     # Bloqueio por conta (defesa contra brute-force distribuído por IP)
     if account_locked(email):
         raise HTTPException(429, "conta_temporariamente_bloqueada")
-    user = db.query(User).filter(User.email == email).first()
+    # Formato inválido (inclui NUL byte, que quebraria o driver do Postgres)
+    # nunca bate com nenhuma conta — trata como credencial errada, sem
+    # tocar no banco.
+    user = db.query(User).filter(User.email == email).first() if _EMAIL_RE.match(email) else None
     if not user or not verify_password(req.password, user.password_hash):
         register_login_failure(email)
         raise HTTPException(401, "credenciais_invalidas")
@@ -106,7 +116,7 @@ def forgot_password(req: ForgotReq, db: Session = Depends(get_db)):
     """Envia um LINK de redefinição (token single-use). NÃO troca a senha aqui —
     assim ninguém tranca a conta de outro só sabendo o e-mail. Resposta genérica."""
     email = req.email.strip().lower()
-    user = db.query(User).filter(User.email == email).first()
+    user = db.query(User).filter(User.email == email).first() if _EMAIL_RE.match(email) else None
     if user and user.status != "bloqueado":
         # Invalida tokens de reset pendentes desta conta e emite um novo
         db.query(PasswordResetToken).filter(

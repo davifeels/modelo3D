@@ -114,7 +114,9 @@ def list_users(
 ):
     query = db.query(User)
     if q:
-        like = f"%{q.strip()}%"
+        # NUL byte (0x00) faz o driver do Postgres rejeitar o literal com
+        # ValueError não tratado -> 500; busca livre não precisa dele.
+        like = f"%{q.strip().replace(chr(0), '')}%"
         if field == "nome":
             query = query.filter(User.name.ilike(like))
         elif field == "email":

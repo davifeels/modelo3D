@@ -325,6 +325,8 @@ def plan_pin_origins(
     """
     if params.joint_type not in JOINT_TYPES:
         raise ValueError(f"Tipo de conector desconhecido: {params.joint_type!r}")
+    if params.n_pins < 1:
+        raise ValueError(f"n_pins deve ser >= 1 (recebido {params.n_pins}).")
     normal = normal / np.linalg.norm(normal)
     root_r = _male_root_radius(params)
     envelope_r = _female_envelope_radius(params)

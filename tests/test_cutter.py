@@ -205,39 +205,87 @@ from src.segmentation import segment_multi
 
 class TestCutByMultiMask:
 
-    def _cylinder_labels(self):
-        mesh = trimesh.creation.cylinder(radius=10.0, height=40.0, sections=32)
+    def _bobbin_labels(self):
+        """
+        Eixo escalonado em 3 seções de raio distinto (bobina), unidas por
+        booleana. Ao contrário de um cilindro único — cujas "tampas" e anéis
+        de degrau isolados são chapas degeneradas (volume ~0, sem sólido
+        válido: ver _merge_degenerate_regions) — cada seção aqui fecha
+        sozinha num sólido real, então sobram 3 partes genuinamente
+        imprimíveis com 2 interfaces axiais entre elas.
+        """
+        a = trimesh.creation.cylinder(radius=12.0, height=15.0, sections=32)
+        a.apply_translation([0, 0, 7.5])
+        b = trimesh.creation.cylinder(radius=8.0, height=15.0, sections=32)
+        b.apply_translation([0, 0, 22.5])
+        c = trimesh.creation.cylinder(radius=12.0, height=15.0, sections=32)
+        c.apply_translation([0, 0, 37.5])
+        mesh = trimesh.boolean.union([a, b, c], engine="manifold")
+        mesh.merge_vertices()
         labels = segment_multi(mesh, "media")
         return mesh, labels
 
     def test_tres_partes_watertight(self):
-        mesh, labels = self._cylinder_labels()
-        parts, interfaces = cut_by_multi_mask(mesh, labels)
+        mesh, labels = self._bobbin_labels()
+        parts, interfaces, region_ids = cut_by_multi_mask(mesh, labels)
         assert len(parts) == 3
+        assert len(region_ids) == 3
         for p in parts:
             assert p.is_watertight, "parte multi-mask não watertight"
+            assert p.is_volume, "parte multi-mask sem volume real (chapa degenerada)"
 
     def test_duas_interfaces_normais_axiais(self):
-        """Tampa↔corpo (2×): normal da interface deve ser ±Z (eixo do cilindro)."""
-        mesh, labels = self._cylinder_labels()
-        _, interfaces = cut_by_multi_mask(mesh, labels)
+        """2 interfaces (degrau↔degrau): normal deve ser ±Z (eixo do cilindro)."""
+        mesh, labels = self._bobbin_labels()
+        _, interfaces, _ = cut_by_multi_mask(mesh, labels)
         assert len(interfaces) == 2
         for itf in interfaces:
             assert abs(itf["normal"][2]) > 0.9, f"normal não axial: {itf['normal']}"
 
     def test_a_e_a_regiao_maior(self):
-        """Convenção: A (pinos) = região maior — corpo do cilindro."""
-        mesh, labels = self._cylinder_labels()
-        _, interfaces = cut_by_multi_mask(mesh, labels)
-        ids, sizes = np.unique(labels, return_counts=True)
-        biggest = int(ids[np.argmax(sizes)])
+        """Convenção: em cada interface, A (pinos) é a região maior DO PAR."""
+        mesh, labels = self._bobbin_labels()
+        parts, interfaces, region_ids = cut_by_multi_mask(mesh, labels)
+        faces_of = dict(zip(region_ids, [len(p.faces) for p in parts]))
         for itf in interfaces:
-            assert itf["region_a"] == biggest
+            assert itf["region_a"] in faces_of and itf["region_b"] in faces_of
+            assert faces_of[itf["region_a"]] >= faces_of[itf["region_b"]]
 
     def test_uma_regiao_levanta_erro(self):
         mesh = trimesh.creation.icosphere(subdivisions=2)
         with pytest.raises(ValueError):
             cut_by_multi_mask(mesh, np.zeros(len(mesh.faces), dtype=int))
+
+    def test_pernas_com_base_plana_nao_viram_pecas_fantasma(self):
+        """
+        Regressão: uma mesinha (tampo + 4 pernas cilíndricas) não pode gerar
+        "peças" separadas para o disco da base de cada perna — sozinho, cada
+        disco é uma chapa de volume ~0, sem sólido válido para as booleanas
+        de encaixe (is_volume=False), e antes da correção vazava junto no
+        export como arquivo não-watertight e sem conector. Os discos devem
+        ser fundidos nas pernas, sobrando só as 5 regiões reais (tampo + 4
+        pernas) com 4 interfaces (uma por perna).
+        """
+        top = trimesh.creation.box(extents=[300, 300, 20])
+        top.apply_translation([0, 0, 110])
+        legs = []
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                leg = trimesh.creation.cylinder(radius=15, height=100, sections=32)
+                leg.apply_translation([sx * 130, sy * 130, 50])
+                legs.append(leg)
+        mesh = trimesh.boolean.union([top] + legs, engine="manifold")
+        mesh.merge_vertices()
+
+        labels = segment_multi(mesh, "media")
+        parts, interfaces, region_ids = cut_by_multi_mask(mesh, labels)
+
+        assert len(parts) == 5, "disco da base de alguma perna vazou como peça própria"
+        assert len(region_ids) == 5
+        for p in parts:
+            assert p.is_watertight
+            assert p.is_volume
+        assert len(interfaces) == 4
 
     def test_labels_tamanho_errado_levanta_erro(self):
         mesh = trimesh.creation.icosphere(subdivisions=2)

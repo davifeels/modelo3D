@@ -598,13 +598,16 @@ def cut_by_multi_mask_route(req: MultiMaskCutReq, user: User = Depends(get_curre
     labels = np.asarray(req.labels, dtype=np.int64)
 
     try:
-        new_parts, interfaces = cut_by_multi_mask(mesh, labels)
+        new_parts, interfaces, region_ids = cut_by_multi_mask(mesh, labels)
     except ValueError as e:
         raise HTTPException(422, str(e))
     except Exception as e:
         raise HTTPException(500, f"Erro ao aplicar máscara: {e}")
 
-    region_ids = [int(r) for r in np.unique(labels)]
+    # region_ids vem de cut_by_multi_mask (pós-fusão de regiões degeneradas)
+    # — NÃO recalcular a partir de `labels` bruto: uma fusão pode deixar
+    # buracos nos ids (ex.: sobra {0, 2, 4}), e zipar com os ids brutos
+    # desalinha name_by_region dos ids que `interfaces` de fato referencia.
     new_names = [f"{base_name}_r{str(i + 1).zfill(2)}" for i in range(len(new_parts))]
     name_by_region = dict(zip(region_ids, new_names))
 
@@ -770,6 +773,9 @@ def confirm(req: ConfirmReq):
     params.joint_type = _validate_joint_type(req.joint_type)
     params.tolerance = JOINT_FITS[_validate_fit(req.fit)]
 
+    # 422 (não 500): a falha aqui vem de cut_origin/cut_normal/pins
+    # fornecidos pelo cliente (ex.: NaN/Inf faz SVD não convergir na
+    # borda de corte) — é entrada inválida, não um bug do servidor.
     if req.pins:
         # §2.2: cada conector com parâmetros próprios (editados no preview)
         specs = _pin_overrides_to_specs(req.pins, cut_normal, params)
@@ -777,7 +783,7 @@ def confirm(req: ConfirmReq):
         try:
             new_a, new_b, warnings = apply_joint_specs(mesh_a, mesh_b, specs)
         except Exception as e:
-            raise HTTPException(500, f"Erro ao gerar encaixes: {e}")
+            raise HTTPException(422, f"Erro ao gerar encaixes: {e}")
     else:
         # Mesmo planejamento do preview — o usuário confirma o que viu
         origins, notes = plan_pin_origins(mesh_a, mesh_b, cut_pts, cut_normal, params)
@@ -787,7 +793,7 @@ def confirm(req: ConfirmReq):
                 origins=origins,
             )
         except Exception as e:
-            raise HTTPException(500, f"Erro ao gerar encaixes: {e}")
+            raise HTTPException(422, f"Erro ao gerar encaixes: {e}")
     warnings = notes + warnings
 
     applied = _joint_applied(mesh_a, mesh_b, new_a, new_b)

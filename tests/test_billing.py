@@ -198,6 +198,17 @@ class TestWebhook:
             pytest.skip("WEBHOOK_SECRET não configurado no servidor")
         assert code == 401
 
+    def test_webhook_user_id_inexistente_422(self):
+        """Regressão: user_id forjado/inexistente derrubava a conexão com
+        IntegrityError (FK violation) em vez de responder um erro limpo."""
+        evt = {"event_id": f"evt-{uuid.uuid4().hex[:10]}", "type": "subscription.activated",
+               "user_id": str(uuid.uuid4()), "plan": "pro", "periodo": "mensal"}
+        resp, code = _req("POST", "/billing/webhook", evt,
+                          headers={"X-Webhook-Secret": "test-secret"})
+        if code == 501:
+            pytest.skip("WEBHOOK_SECRET não configurado no servidor")
+        assert code == 422, f"esperava 422, veio {code}: {resp}"
+
     def test_webhook_idempotente(self):
         token, _, uid = apiauth.register_user()
         eid = f"evt-{uuid.uuid4().hex[:10]}"

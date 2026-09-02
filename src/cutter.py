@@ -330,16 +330,84 @@ def cut_by_mask(mesh: trimesh.Trimesh, painted_idx) -> tuple:
     return part_painted, part_base, origin, normal
 
 
+def _is_valid_region_volume(mesh: trimesh.Trimesh, labels: np.ndarray, rid) -> bool:
+    """
+    True se a região `rid`, uma vez fechada (_close_open_mesh), forma um
+    sólido válido para booleanas — mesmo teste (`is_volume`) que o engine
+    manifold usa internamente; sua falha é o "Not all meshes are volumes!"
+    que quebra a geração de encaixes.
+    """
+    idx = np.nonzero(labels == rid)[0]
+    if len(idx) == 0:
+        return False
+    part = _close_open_mesh(mesh.submesh([idx], append=True))
+    return bool(part is not None and len(part.faces) > 0 and part.is_volume)
+
+
+def _merge_degenerate_regions(mesh: trimesh.Trimesh, labels: np.ndarray) -> np.ndarray:
+    """
+    Funde regiões que NÃO formam um sólido válido (ver _is_valid_region_volume)
+    na vizinha VÁLIDA com maior fronteira compartilhada — mesma heurística de
+    segmentation._merge_small_regions, mas pelo critério "é um sólido real?"
+    em vez de contagem de faces.
+
+    Acontece com "caps" planos isolados por uma quina de 90°: ex. a base de
+    uma perna cilíndrica virando sua própria região (a região da parede
+    lateral já fecha sozinha num cilindro completo via _close_open_mesh —
+    o cap isolado é redundante e, sozinho, é uma chapa de volume ~0). Sem
+    esta fusão, cut_by_multi_mask geraria uma "peça" não imprimível e sem
+    encaixe possível.
+    """
+    labels = labels.copy()
+    fa = mesh.face_adjacency
+
+    ids = np.unique(labels)
+    degenerate = [int(rid) for rid in ids if not _is_valid_region_volume(mesh, labels, rid)]
+    if not degenerate:
+        return labels
+
+    for sid in degenerate:
+        if not np.any(labels == sid):
+            continue  # já foi fundida junto com outra região degenerada
+        la, lb = labels[fa[:, 0]], labels[fa[:, 1]]
+        touching = np.concatenate([
+            lb[(la == sid) & (lb != sid)],
+            la[(lb == sid) & (la != sid)],
+        ])
+        valid_touch = touching[~np.isin(touching, degenerate)]
+        pool = valid_touch if len(valid_touch) > 0 else touching
+        if len(pool) > 0:
+            n_ids, n_counts = np.unique(pool, return_counts=True)
+            target = int(n_ids[np.argmax(n_counts)])
+        else:
+            # fragmento isolado sem vizinhos -- funde na maior região atual
+            rem_ids, sizes = np.unique(labels, return_counts=True)
+            others_mask = rem_ids != sid
+            if not np.any(others_mask):
+                continue  # única região restante -- nada a fundir
+            target = int(rem_ids[others_mask][np.argmax(sizes[others_mask])])
+        labels[labels == sid] = target
+
+    return labels
+
+
 def cut_by_multi_mask(mesh: trimesh.Trimesh, labels) -> tuple:
     """
     Divide a malha em N partes — uma por região da máscara (§1, modo
     Professional). Cada parte é fechada com caps (_close_open_mesh).
+    Regiões sem volume real (ver _merge_degenerate_regions) são fundidas
+    na vizinha antes do corte final.
 
-    Retorna (parts, interfaces):
-    - parts: lista de Trimesh na ordem dos ids de região (0..k-1)
+    Retorna (parts, interfaces, region_ids):
+    - parts: lista de Trimesh, parts[i] corresponde à região region_ids[i]
     - interfaces: [{'region_a', 'region_b', 'origin', 'normal'}] por par de
       regiões adjacentes. Convenção dos encaixes: A = região MAIOR (recebe
       pinos), B = menor (cavidades); normal aponta de B para A.
+    - region_ids: ids finais das regiões (após _merge_degenerate_regions) —
+      NÃO são necessariamente 0..k-1 nem os ids originais em `labels": uma
+      fusão pode deixar buracos (ex.: sobra {0, 2, 4}). `region_a`/
+      `region_b` em cada interface sempre referenciam um id desta lista —
+      chamadores não devem recalcular ids a partir do `labels` de entrada.
     """
     labels = np.asarray(labels, dtype=np.int64)
     n_faces = len(mesh.faces)
@@ -348,6 +416,14 @@ def cut_by_multi_mask(mesh: trimesh.Trimesh, labels) -> tuple:
     region_ids = np.unique(labels)
     if len(region_ids) < 2:
         raise ValueError("A máscara precisa de pelo menos 2 regiões.")
+
+    labels = _merge_degenerate_regions(mesh, labels)
+    region_ids = np.unique(labels)
+    if len(region_ids) < 2:
+        raise ValueError(
+            "Após descartar regiões sem volume real (ex.: uma tampa plana "
+            "isolada por uma quina), restou menos de 2 regiões válidas."
+        )
 
     verts = np.asarray(mesh.vertices)
 
@@ -403,7 +479,7 @@ def cut_by_multi_mask(mesh: trimesh.Trimesh, labels) -> tuple:
                 "origin": origin, "normal": np.asarray(normal, dtype=float),
             })
 
-    return parts, interfaces
+    return parts, interfaces, [int(r) for r in region_ids]
 
 
 def _bfs_region(mesh: trimesh.Trimesh, start_face: int, angle_deg: float):
